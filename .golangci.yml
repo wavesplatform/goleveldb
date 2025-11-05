@@ -1,11 +1,30 @@
-linters-settings:
-  gocritic:
-    disabled-checks:
-      - ifElseChain
-      - elseif
-
+version: "2"
 linters:
   enable:
-    - gofmt
     - gocritic
     - unconvert
+  settings:
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+        - elseif
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
