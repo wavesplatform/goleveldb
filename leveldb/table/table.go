@@ -151,6 +151,7 @@ const (
 	// These constants are part of the file format and should not be changed.
 	blockTypeNoCompression     = 0
 	blockTypeSnappyCompression = 1
+	blockTypeZSTDCompression   = 2 // TODO: implement ZSTD decompression
 )
 
 type blockHandle struct {

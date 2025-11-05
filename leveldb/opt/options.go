@@ -116,14 +116,18 @@ func (c Compression) String() string {
 		return "none"
 	case SnappyCompression:
 		return "snappy"
+	case ZSTDCompression:
+		return "zstd"
+	default:
+		return "invalid"
 	}
-	return "invalid"
 }
 
 const (
 	DefaultCompression Compression = iota
 	NoCompression
 	SnappyCompression
+	ZSTDCompression // TODO: implement ZSTD
 	nCompression
 )
 

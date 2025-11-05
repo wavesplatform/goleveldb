@@ -576,6 +576,8 @@ func (r *Reader) readRawBlock(bh blockHandle, verifyChecksum bool) ([]byte, erro
 	}
 
 	switch data[bh.length] {
+	case blockTypeZSTDCompression:
+		fallthrough // TODO: implement ZSTD decompression
 	case blockTypeNoCompression:
 		data = data[:bh.length]
 	case blockTypeSnappyCompression:
