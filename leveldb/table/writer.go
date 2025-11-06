@@ -13,6 +13,7 @@ import (
 	"io"
 
 	"github.com/golang/snappy"
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/wavesplatform/goleveldb/leveldb/comparer"
 	"github.com/wavesplatform/goleveldb/leveldb/filter"
@@ -183,11 +184,22 @@ func (w *Writer) writeBlock(buf *util.Buffer, compression opt.Compression) (bh b
 		b = compressed[:n+blockTrailerLen]
 		b[n] = blockTypeSnappyCompression
 	case opt.ZSTDCompression:
-		fallthrough // TODO: implement ZSTD compression
-	default: // TODO: set to no compression based on options, return error for unknown compression
+		w.compressionScratch = zstd.EncodeTo(w.compressionScratch[:0], buf.Bytes())
+		n := len(w.compressionScratch)        // compressed size
+		size := n + blockTrailerLen           // total size with trailer
+		if cap(w.compressionScratch) < size { // slow path: cant grow by reslice, need to allocate new
+			old := w.compressionScratch
+			w.compressionScratch = make([]byte, size) // allocate the needed size
+			copy(w.compressionScratch, old)           // copy compressed data
+		}
+		b = w.compressionScratch[:size]
+		b[n] = blockTypeZSTDCompression // set block type before checksum
+	case opt.NoCompression:
 		tmp := buf.Alloc(blockTrailerLen)
 		tmp[0] = blockTypeNoCompression
 		b = buf.Bytes()
+	default:
+		return bh, fmt.Errorf("leveldb/table: Writer: unknown compression type: %v", compression)
 	}
 
 	// Calculate the checksum.

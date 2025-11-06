@@ -127,7 +127,7 @@ const (
 	DefaultCompression Compression = iota
 	NoCompression
 	SnappyCompression
-	ZSTDCompression // TODO: implement ZSTD
+	ZSTDCompression
 	nCompression
 )
 

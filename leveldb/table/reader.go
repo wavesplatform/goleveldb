@@ -10,11 +10,14 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/golang/snappy"
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/wavesplatform/goleveldb/leveldb/cache"
 	"github.com/wavesplatform/goleveldb/leveldb/comparer"
@@ -515,6 +518,9 @@ type Reader struct {
 	cache  *cache.NamespaceGetter
 	err    error
 	bpool  *util.BufferPool
+	// Approximate decompressed to compressed ratio.
+	// active only when ZSTD compression is used.
+	approxDecompressedToCompressedRatioBits atomic.Uint64 // float64
 	// Options
 	o              *opt.Options
 	cmp            comparer.Comparer
@@ -559,6 +565,24 @@ func (r *Reader) fixErrCorruptedBH(bh blockHandle, err error) error {
 	return err
 }
 
+const defaultApproxDecompressedToCompressedRatio = 2.0
+
+func (r *Reader) approxDecompressedToCompressedRatio() float64 {
+	ratioBitsUint := r.approxDecompressedToCompressedRatioBits.Load()
+	if ratioBitsUint == 0 { // not yet set
+		return defaultApproxDecompressedToCompressedRatio
+	}
+	return math.Float64frombits(ratioBitsUint)
+}
+
+func (r *Reader) updateApproxDecompressedToCompressedRatio(newRatio float64) {
+	if newRatio < defaultApproxDecompressedToCompressedRatio { // avoid invalid ratio
+		return
+	}
+	newRatioBits := math.Float64bits(newRatio)
+	r.approxDecompressedToCompressedRatioBits.Store(newRatioBits)
+}
+
 func (r *Reader) readRawBlock(bh blockHandle, verifyChecksum bool) ([]byte, error) {
 	data := r.bpool.Get(int(bh.length + blockTrailerLen))
 	if _, err := r.reader.ReadAt(data, int64(bh.offset)); err != nil && err != io.EOF {
@@ -576,8 +600,6 @@ func (r *Reader) readRawBlock(bh blockHandle, verifyChecksum bool) ([]byte, erro
 	}
 
 	switch data[bh.length] {
-	case blockTypeZSTDCompression:
-		fallthrough // TODO: implement ZSTD decompression
 	case blockTypeNoCompression:
 		data = data[:bh.length]
 	case blockTypeSnappyCompression:
@@ -594,6 +616,23 @@ func (r *Reader) readRawBlock(bh blockHandle, verifyChecksum bool) ([]byte, erro
 			return nil, r.newErrCorruptedBH(bh, err.Error())
 		}
 		data = decData
+	case blockTypeZSTDCompression:
+		decRatio := r.approxDecompressedToCompressedRatio()
+		estDecLen := int(float64(bh.length) * decRatio) // estimated decompressed length
+		decData := r.bpool.Get(estDecLen)               // get buffer from pool
+		decData, err := zstd.DecodeTo(decData[:0], data[:bh.length])
+		r.bpool.Put(data)
+		if err != nil {
+			r.bpool.Put(decData)
+			return nil, r.newErrCorruptedBH(bh, err.Error())
+		}
+		data = decData
+		// Update approximate decompressed to compressed ratio.
+		// Only update when the new ratio is greater than the current ratio
+		// to avoid oscillation.
+		if newRatio := float64(len(decData)) / float64(bh.length); newRatio > decRatio {
+			r.updateApproxDecompressedToCompressedRatio(newRatio)
+		}
 	default:
 		r.bpool.Put(data)
 		return nil, r.newErrCorruptedBH(bh, fmt.Sprintf("unknown compression type %#x", data[bh.length]))
