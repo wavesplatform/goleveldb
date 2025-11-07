@@ -18,6 +18,7 @@ import (
 
 	"github.com/golang/snappy"
 	"github.com/klauspost/compress/zstd"
+	"github.com/minio/minlz"
 
 	"github.com/wavesplatform/goleveldb/leveldb/cache"
 	"github.com/wavesplatform/goleveldb/leveldb/comparer"
@@ -633,6 +634,20 @@ func (r *Reader) readRawBlock(bh blockHandle, verifyChecksum bool) ([]byte, erro
 		if newRatio := float64(len(decData)) / float64(bh.length); newRatio > decRatio {
 			r.updateApproxDecompressedToCompressedRatio(newRatio)
 		}
+	case blockTypeMinLZCompression:
+		decLen, err := minlz.DecodedLen(data[:bh.length])
+		if err != nil {
+			r.bpool.Put(data)
+			return nil, r.newErrCorruptedBH(bh, err.Error())
+		}
+		decData := r.bpool.Get(decLen)
+		decData, err = minlz.Decode(decData, data[:bh.length])
+		r.bpool.Put(data)
+		if err != nil {
+			r.bpool.Put(decData)
+			return nil, r.newErrCorruptedBH(bh, err.Error())
+		}
+		data = decData
 	default:
 		r.bpool.Put(data)
 		return nil, r.newErrCorruptedBH(bh, fmt.Sprintf("unknown compression type %#x", data[bh.length]))

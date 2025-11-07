@@ -128,6 +128,7 @@ const (
 	NoCompression
 	SnappyCompression
 	ZSTDCompression
+	MinLZCompression
 	nCompression
 )
 

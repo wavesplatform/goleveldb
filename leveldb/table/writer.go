@@ -14,6 +14,7 @@ import (
 
 	"github.com/golang/snappy"
 	"github.com/klauspost/compress/zstd"
+	"github.com/minio/minlz"
 
 	"github.com/wavesplatform/goleveldb/leveldb/comparer"
 	"github.com/wavesplatform/goleveldb/leveldb/filter"
@@ -194,6 +195,19 @@ func (w *Writer) writeBlock(buf *util.Buffer, compression opt.Compression) (bh b
 		}
 		b = w.compressionScratch[:size]
 		b[n] = blockTypeZSTDCompression // set block type before checksum
+	case opt.MinLZCompression:
+		if n := minlz.MaxEncodedLen(buf.Len()) + blockTrailerLen; len(w.compressionScratch) < n {
+			w.compressionScratch = make([]byte, n)
+		}
+		// Fastest compression level has been chosen because it gives decent compression ratio
+		// with very fast compression speed. (better than snappy in both aspects)
+		compressed, err := minlz.Encode(w.compressionScratch, buf.Bytes(), minlz.LevelFastest)
+		if err != nil {
+			return bh, err
+		}
+		n := len(compressed)
+		b = compressed[:n+blockTrailerLen]
+		b[n] = blockTypeMinLZCompression
 	case opt.NoCompression:
 		tmp := buf.Alloc(blockTrailerLen)
 		tmp[0] = blockTypeNoCompression

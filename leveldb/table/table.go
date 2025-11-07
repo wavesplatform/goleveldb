@@ -152,6 +152,7 @@ const (
 	blockTypeNoCompression     = 0
 	blockTypeSnappyCompression = 1
 	blockTypeZSTDCompression   = 2
+	blockTypeMinLZCompression  = 3
 )
 
 type blockHandle struct {
