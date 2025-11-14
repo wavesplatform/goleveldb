@@ -7,11 +7,12 @@
 package table
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"slices"
 
 	"github.com/golang/snappy"
 	"github.com/klauspost/compress/zstd"
@@ -233,40 +234,34 @@ func (w *Writer) writeBlock(buf *util.Buffer, compression opt.Compression) (bh b
 	return
 }
 
-var minLZEncoderPool = newTypedSyncPool(
-	func() *minlz.Writer {
-		return minlz.NewWriter(
-			nil,
-			minlz.WriterConcurrency(minLZConcurrency),
-			// Fastest compression level has been chosen because it gives decent compression ratio
-			// with very fast compression speed. (better than snappy in both aspects)
-			minlz.WriterLevel(minlz.LevelFastest),
-		)
-	}, func(w *minlz.Writer) {
-		if w != nil {
-			w.Reset(nil) // reset writer to release references and internal writer resources if any
-		}
-	},
-)
+const uin32tSize = 4
+
+var _ = map[bool]struct{}{false: {}, math.MaxUint32 > minlz.MaxBlockSize: {}} // compile-time assert
 
 // minLZEncodeTo appends the encoded data from src to dst.
 // It returns the compressed data slice (which may share the same underlying array as dst) or an error.
 // If dst is not large enough, a new slice will be allocated.
 func minLZEncodeTo(dst, src []byte) ([]byte, error) {
-	encoder := minLZEncoderPool.Get()
-	defer minLZEncoderPool.Put(encoder)
-
-	bb := bytes.NewBuffer(dst[:0])
-	encoder.Reset(bb)
-	if err := encoder.EncodeBuffer(src); err != nil {
-		// Not necessary to call encoder.Close() if EncodeBuffer returns error
-		// because Close() call only flushes remaining data and marks the end of stream.
-		return nil, fmt.Errorf("leveldb/table: Writer: minlz compression failed: %w", err)
+	dst = dst[:0]
+	var (
+		err error
+		pos int
+	)
+	// split src into chunks of max minlz.MaxBlockSize size because minlz can only handle that much data at once
+	for srcPart := range slices.Chunk(src, minlz.MaxBlockSize) {
+		dst = slices.Grow(dst, uin32tSize)[:len(dst)+uin32tSize] // Reserve space for length prefix
+		// Fastest compression level has been chosen because it gives decent compression ratio
+		// with very fast compression speed. (better than snappy in both aspects)
+		dst, err = minlz.AppendEncoded(dst, srcPart, minlz.LevelFastest)
+		if err != nil {
+			return nil, err
+		}
+		// Write length prefix
+		compressedSize := uint32(len(dst[pos:]) - uin32tSize)
+		binary.BigEndian.PutUint32(dst[pos:], compressedSize)
+		pos = len(dst) // Move position to the end of the compressed data
 	}
-	if err := encoder.Close(); err != nil {
-		return nil, fmt.Errorf("leveldb/table: Writer: minlz compression close failed: %w", err)
-	}
-	return bb.Bytes(), nil
+	return dst, nil
 }
 
 func (w *Writer) flushPendingBH(key []byte) error {

@@ -8,6 +8,9 @@ package table
 
 import (
 	"bytes"
+	"io"
+	"math/rand/v2"
+	"testing"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -129,3 +132,26 @@ var _ = testutil.Defer(func() {
 		})
 	})
 })
+
+func TestMinLZRoundTrip(t *testing.T) {
+	// generate random data
+	r := rand.NewChaCha8([32]byte{1, 2, 3, 4})
+	data := make([]byte, 10<<20) // 10 MB
+	if _, err := io.ReadFull(r, data); err != nil {
+		t.Fatalf("failed to generate random data: %v", err)
+	}
+	// compress with min lz
+	compressed, err := minLZEncodeTo(nil, data)
+	if err != nil {
+		t.Fatalf("failed to compress data: %v", err)
+	}
+	// decompress
+	decompressed, err := minLZDecodeTo(nil, compressed)
+	if err != nil {
+		t.Fatalf("failed to decompress data: %v", err)
+	}
+	// compare
+	if !bytes.Equal(data, decompressed) {
+		t.Fatalf("decompressed data does not match original")
+	}
+}

@@ -9,7 +9,6 @@ package table
 
 import (
 	"encoding/binary"
-	"sync"
 )
 
 /*
@@ -156,8 +155,6 @@ const (
 	blockTypeMinLZCompression  = 3
 )
 
-const minLZConcurrency = 1 // use single thread for minLZ compression because data blocks are usually small
-
 type blockHandle struct {
 	offset, length uint64
 }
@@ -175,37 +172,4 @@ func encodeBlockHandle(dst []byte, b blockHandle) int {
 	n := binary.PutUvarint(dst, b.offset)
 	m := binary.PutUvarint(dst[n:], b.length)
 	return n + m
-}
-
-type typedSyncPool[PT any] struct {
-	pool     sync.Pool
-	resetter func(PT)
-}
-
-// newTypedSyncPool creates a new typed sync.Pool.
-// newFunc is used to create new instances.
-// resetter is used to reset instances before putting them back to the pool, can be nil.
-// newFunc should return a pointer type to avoid unnecessary copying, resetter should accept the same pointer type.
-func newTypedSyncPool[T any, PT interface{ *T }](
-	newFunc func() PT, resetter func(PT),
-) *typedSyncPool[PT] {
-	return &typedSyncPool[PT]{
-		pool: sync.Pool{
-			New: func() any {
-				return newFunc()
-			},
-		},
-		resetter: resetter,
-	}
-}
-
-func (p *typedSyncPool[PT]) Get() PT {
-	return p.pool.Get().(PT)
-}
-
-func (p *typedSyncPool[PT]) Put(r PT) {
-	if p.resetter != nil {
-		p.resetter(r)
-	}
-	p.pool.Put(r)
 }

@@ -7,9 +7,7 @@
 package table
 
 import (
-	"bytes"
 	"encoding/binary"
-	stderrs "errors"
 	"fmt"
 	"io"
 	"math"
@@ -637,12 +635,10 @@ func (r *Reader) readRawBlock(bh blockHandle, verifyChecksum bool) ([]byte, erro
 			r.updateApproxDecompressedToCompressedRatio(newRatio)
 		}
 	case blockTypeMinLZCompression:
-		decData, decRatio, err := r.getBufForMinLZDecoder(data[:bh.length]) // get buffer from pool
-		if err != nil {
-			r.bpool.Put(data)
-			return nil, r.newErrCorruptedBH(bh, err.Error())
-		}
-		decData, err = minLZDecodeTo(decData[:0], data[:bh.length])
+		decRatio := r.approxDecompressedToCompressedRatio()
+		estDecLen := int(float64(bh.length) * decRatio) // estimated decompressed length
+		decData := r.bpool.Get(estDecLen)               // get buffer from pool
+		decData, err := minLZDecodeTo(decData[:0], data[:bh.length])
 		r.bpool.Put(data)
 		if err != nil {
 			r.bpool.Put(decData)
@@ -662,47 +658,28 @@ func (r *Reader) readRawBlock(bh blockHandle, verifyChecksum bool) ([]byte, erro
 	return data, nil
 }
 
-func (r *Reader) getBufForMinLZDecoder(data []byte) ([]byte, float64, error) {
-	decLen, err := minlz.DecodedLen(data)
-	if err == nil {
-		return r.bpool.Get(decLen), float64(decLen) / float64(len(data)), nil
-	}
-	if !stderrs.Is(err, minlz.ErrTooLarge) {
-		return nil, 0, fmt.Errorf("minlz decoded len error: %w", err)
-	}
-	decRatio := r.approxDecompressedToCompressedRatio()
-	estDecLen := int(float64(len(data)) * decRatio) // estimated decompressed length
-	return r.bpool.Get(estDecLen), decRatio, nil
-}
-
-var minLZDecoderPool = newTypedSyncPool(
-	func() *minlz.Reader {
-		return minlz.NewReader(nil)
-	},
-	func(r *minlz.Reader) {
-		if r != nil {
-			r.Reset(nil) // reset reader to release references and avoid memory leaks
-		}
-	},
-)
-
 // minLZDecodeTo appends the decoded data from src to dst.
 // It returns the decoded data slice (which may be different from dst) or an error.
 // If dst is not large enough, a new buffer will be allocated.
 func minLZDecodeTo(dst []byte, src []byte) ([]byte, error) {
-	var (
-		srcR  = bytes.NewReader(src)     // input reader for minlz decoder
-		dstWT = bytes.NewBuffer(dst[:0]) // output writer from for minlz decoder
-		_     = io.ReaderFrom(dstWT)     // check for io.ReaderFrom to enable optimizations in minlz decoder
-	)
-	lzr := minLZDecoderPool.Get()
-	defer minLZDecoderPool.Put(lzr)
-	lzr.Reset(srcR)
-
-	if _, err := lzr.DecodeConcurrent(dstWT, minLZConcurrency); err != nil {
-		return nil, fmt.Errorf("minlz decode error: %w", err)
+	dst = dst[:0]
+	var err error
+	for len(src) > 0 {
+		if l := len(src); l < uin32tSize {
+			return nil, fmt.Errorf("minlz insufficient data: need at least %d bytes, got %d bytes", uin32tSize, l)
+		}
+		size := binary.BigEndian.Uint32(src[:uin32tSize])
+		src = src[uin32tSize:]                   // cut off prefix size bytes
+		if l := len(src); uint(l) < uint(size) { // sanity check
+			return nil, fmt.Errorf("minlz invalid size: size=%d > remaining=%d", size, l)
+		}
+		dst, err = minlz.AppendDecoded(dst, src[:size])
+		if err != nil {
+			return nil, fmt.Errorf("minlz append decoded error: %w", err)
+		}
+		src = src[size:] // cut off compressed data bytes
 	}
-	return dstWT.Bytes(), nil
+	return dst, nil
 }
 
 func (r *Reader) readBlock(bh blockHandle, verifyChecksum bool) (*block, error) {
