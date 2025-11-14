@@ -7,6 +7,7 @@
 package table
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -196,18 +197,19 @@ func (w *Writer) writeBlock(buf *util.Buffer, compression opt.Compression) (bh b
 		b = w.compressionScratch[:size]
 		b[n] = blockTypeZSTDCompression // set block type before checksum
 	case opt.MinLZCompression:
-		if n := minlz.MaxEncodedLen(buf.Len()) + blockTrailerLen; len(w.compressionScratch) < n {
-			w.compressionScratch = make([]byte, n)
-		}
-		// Fastest compression level has been chosen because it gives decent compression ratio
-		// with very fast compression speed. (better than snappy in both aspects)
-		compressed, err := minlz.Encode(w.compressionScratch, buf.Bytes(), minlz.LevelFastest)
+		w.compressionScratch, err = minLZEncodeTo(w.comparerScratch[:0], buf.Bytes())
 		if err != nil {
-			return bh, err
+			return bh, fmt.Errorf("leveldb/table: Writer: minlz compression failed: %w", err)
 		}
-		n := len(compressed)
-		b = compressed[:n+blockTrailerLen]
-		b[n] = blockTypeMinLZCompression
+		n := len(w.compressionScratch)        // compressed size
+		size := n + blockTrailerLen           // total size with trailer
+		if cap(w.compressionScratch) < size { // slow path: cant grow by reslice, need to allocate new
+			old := w.compressionScratch
+			w.compressionScratch = make([]byte, size) // allocate the needed size
+			copy(w.compressionScratch, old)           // copy compressed data
+		}
+		b = w.compressionScratch[:size]
+		b[n] = blockTypeMinLZCompression // set block type before checksum
 	case opt.NoCompression:
 		tmp := buf.Alloc(blockTrailerLen)
 		tmp[0] = blockTypeNoCompression
@@ -229,6 +231,42 @@ func (w *Writer) writeBlock(buf *util.Buffer, compression opt.Compression) (bh b
 	bh = blockHandle{w.offset, uint64(len(b) - blockTrailerLen)}
 	w.offset += uint64(len(b))
 	return
+}
+
+var minLZEncoderPool = newTypedSyncPool(
+	func() *minlz.Writer {
+		return minlz.NewWriter(
+			nil,
+			minlz.WriterConcurrency(minLZConcurrency),
+			// Fastest compression level has been chosen because it gives decent compression ratio
+			// with very fast compression speed. (better than snappy in both aspects)
+			minlz.WriterLevel(minlz.LevelFastest),
+		)
+	}, func(w *minlz.Writer) {
+		if w != nil {
+			w.Reset(nil) // reset writer to release references and internal writer resources if any
+		}
+	},
+)
+
+// minLZEncodeTo appends the encoded data from src to dst.
+// It returns the compressed data slice (which may share the same underlying array as dst) or an error.
+// If dst is not large enough, a new slice will be allocated.
+func minLZEncodeTo(dst, src []byte) ([]byte, error) {
+	encoder := minLZEncoderPool.Get()
+	defer minLZEncoderPool.Put(encoder)
+
+	bb := bytes.NewBuffer(dst[:0])
+	encoder.Reset(bb)
+	if err := encoder.EncodeBuffer(src); err != nil {
+		// Not necessary to call encoder.Close() if EncodeBuffer returns error
+		// because Close() call only flushes remaining data and marks the end of stream.
+		return nil, fmt.Errorf("leveldb/table: Writer: minlz compression failed: %w", err)
+	}
+	if err := encoder.Close(); err != nil {
+		return nil, fmt.Errorf("leveldb/table: Writer: minlz compression close failed: %w", err)
+	}
+	return bb.Bytes(), nil
 }
 
 func (w *Writer) flushPendingBH(key []byte) error {

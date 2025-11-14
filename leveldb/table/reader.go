@@ -7,7 +7,9 @@
 package table
 
 import (
+	"bytes"
 	"encoding/binary"
+	stderrs "errors"
 	"fmt"
 	"io"
 	"math"
@@ -520,7 +522,7 @@ type Reader struct {
 	err    error
 	bpool  *util.BufferPool
 	// Approximate decompressed to compressed ratio.
-	// active only when ZSTD compression is used.
+	// active only when ZSTD or MinLZ compression is used.
 	approxDecompressedToCompressedRatioBits atomic.Uint64 // float64
 	// Options
 	o              *opt.Options
@@ -635,24 +637,72 @@ func (r *Reader) readRawBlock(bh blockHandle, verifyChecksum bool) ([]byte, erro
 			r.updateApproxDecompressedToCompressedRatio(newRatio)
 		}
 	case blockTypeMinLZCompression:
-		decLen, err := minlz.DecodedLen(data[:bh.length])
+		decData, decRatio, err := r.getBufForMinLZDecoder(data[:bh.length]) // get buffer from pool
 		if err != nil {
 			r.bpool.Put(data)
 			return nil, r.newErrCorruptedBH(bh, err.Error())
 		}
-		decData := r.bpool.Get(decLen)
-		decData, err = minlz.Decode(decData, data[:bh.length])
+		decData, err = minLZDecodeTo(decData[:0], data[:bh.length])
 		r.bpool.Put(data)
 		if err != nil {
 			r.bpool.Put(decData)
 			return nil, r.newErrCorruptedBH(bh, err.Error())
 		}
 		data = decData
+		// Update approximate decompressed to compressed ratio.
+		// Only update when the new ratio is greater than the current ratio
+		// to avoid oscillation.
+		if newRatio := float64(len(decData)) / float64(bh.length); newRatio > decRatio {
+			r.updateApproxDecompressedToCompressedRatio(newRatio)
+		}
 	default:
 		r.bpool.Put(data)
 		return nil, r.newErrCorruptedBH(bh, fmt.Sprintf("unknown compression type %#x", data[bh.length]))
 	}
 	return data, nil
+}
+
+func (r *Reader) getBufForMinLZDecoder(data []byte) ([]byte, float64, error) {
+	decLen, err := minlz.DecodedLen(data)
+	if err == nil {
+		return r.bpool.Get(decLen), float64(decLen) / float64(len(data)), nil
+	}
+	if !stderrs.Is(err, minlz.ErrTooLarge) {
+		return nil, 0, fmt.Errorf("minlz decoded len error: %w", err)
+	}
+	decRatio := r.approxDecompressedToCompressedRatio()
+	estDecLen := int(float64(len(data)) * decRatio) // estimated decompressed length
+	return r.bpool.Get(estDecLen), decRatio, nil
+}
+
+var minLZDecoderPool = newTypedSyncPool(
+	func() *minlz.Reader {
+		return minlz.NewReader(nil)
+	},
+	func(r *minlz.Reader) {
+		if r != nil {
+			r.Reset(nil) // reset reader to release references and avoid memory leaks
+		}
+	},
+)
+
+// minLZDecodeTo appends the decoded data from src to dst.
+// It returns the decoded data slice (which may be different from dst) or an error.
+// If dst is not large enough, a new buffer will be allocated.
+func minLZDecodeTo(dst []byte, src []byte) ([]byte, error) {
+	var (
+		srcR  = bytes.NewReader(src)     // input reader for minlz decoder
+		dstWT = bytes.NewBuffer(dst[:0]) // output writer from for minlz decoder
+		_     = io.ReaderFrom(dstWT)     // check for io.ReaderFrom to enable optimizations in minlz decoder
+	)
+	lzr := minLZDecoderPool.Get()
+	defer minLZDecoderPool.Put(lzr)
+	lzr.Reset(srcR)
+
+	if _, err := lzr.DecodeConcurrent(dstWT, minLZConcurrency); err != nil {
+		return nil, fmt.Errorf("minlz decode error: %w", err)
+	}
+	return dstWT.Bytes(), nil
 }
 
 func (r *Reader) readBlock(bh blockHandle, verifyChecksum bool) (*block, error) {
