@@ -668,14 +668,19 @@ func minLZDecodeTo(dst []byte, src []byte) ([]byte, error) {
 		if l := len(src); l < uin32tSize {
 			return nil, fmt.Errorf("minlz insufficient data: need at least %d bytes, got %d bytes", uin32tSize, l)
 		}
-		size := binary.BigEndian.Uint32(src[:uin32tSize])
-		src = src[uin32tSize:]                   // cut off prefix size bytes
+		encodedSize := binary.BigEndian.Uint32(src[:uin32tSize])
+		src = src[uin32tSize:] // cut off prefix size bytes
+		size, isDataCompressed := decodeSize(encodedSize)
 		if l := len(src); uint(l) < uint(size) { // sanity check
 			return nil, fmt.Errorf("minlz invalid size: size=%d > remaining=%d", size, l)
 		}
-		dst, err = minlz.AppendDecoded(dst, src[:size])
-		if err != nil {
-			return nil, fmt.Errorf("minlz append decoded error: %w", err)
+		if isDataCompressed {
+			dst, err = minlz.AppendDecoded(dst, src[:size])
+			if err != nil {
+				return nil, fmt.Errorf("minlz append decoded error: %w", err)
+			}
+		} else {
+			dst = append(dst, src[:size]...) // uncompressed data
 		}
 		src = src[size:] // cut off compressed data bytes
 	}
