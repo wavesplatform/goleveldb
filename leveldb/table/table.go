@@ -9,10 +9,6 @@ package table
 
 import (
 	"encoding/binary"
-	"fmt"
-	"math"
-
-	"github.com/minio/minlz"
 )
 
 /*
@@ -176,29 +172,4 @@ func encodeBlockHandle(dst []byte, b blockHandle) int {
 	n := binary.PutUvarint(dst, b.offset)
 	m := binary.PutUvarint(dst[n:], b.length)
 	return n + m
-}
-
-const uin32tSize = 4
-
-var _ = map[bool]struct{}{false: {}, math.MaxInt32 > minlz.MaxBlockSize: {}} // compile-time assert for minlz
-
-const maxUint32BitMask = math.MaxUint32 - math.MaxInt32
-
-func encodeSize(size uint32, compressed bool) (uint32, error) {
-	if size > math.MaxInt32 {
-		return 0, fmt.Errorf("size overflow: %d > %d", size, math.MaxInt32)
-	}
-	if compressed {
-		return size | maxUint32BitMask, nil
-	}
-	return size, nil
-}
-
-func decodeSize(encodedSize uint32) (uint32, bool) {
-	if encodedSize&maxUint32BitMask != 0 {
-		size := encodedSize &^ maxUint32BitMask // clear highest bit
-		return size, true
-	}
-	size := encodedSize // not compressed
-	return size, false
 }

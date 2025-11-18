@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 
 	"github.com/golang/snappy"
@@ -233,6 +234,10 @@ func (w *Writer) writeBlock(buf *util.Buffer, compression opt.Compression) (bh b
 	return
 }
 
+const uin32tSize = 4
+
+var _ = map[bool]struct{}{false: {}, math.MaxUint32 > minlz.MaxBlockSize: {}} // compile-time assert
+
 // minLZEncodeTo appends the encoded data from src to dst.
 // It returns the compressed data slice (which may share the same underlying array as dst) or an error.
 // If dst is not large enough, a new slice will be allocated.
@@ -251,19 +256,9 @@ func minLZEncodeTo(dst, src []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		size := uint32(len(dst[pos:]) - uin32tSize)
-		writeCompressed := int(size) < len(srcPart) // check if compression was effective
-		if !writeCompressed {                       // if not effective, write uncompressed data
-			dst = dst[:pos+uin32tSize]    // reset to position after length prefix
-			dst = append(dst, srcPart...) // Append uncompressed data
-			size = uint32(len(srcPart))
-		}
-		encodedSize, encErr := encodeSize(size, writeCompressed)
-		if encErr != nil {
-			return nil, encErr
-		}
 		// Write length prefix
-		binary.BigEndian.PutUint32(dst[pos:], encodedSize)
+		compressedSize := uint32(len(dst[pos:]) - uin32tSize)
+		binary.BigEndian.PutUint32(dst[pos:], compressedSize)
 		pos = len(dst) // Move position to the end of the compressed data
 	}
 	return dst, nil

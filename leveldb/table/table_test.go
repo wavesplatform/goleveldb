@@ -136,8 +136,8 @@ var _ = testutil.Defer(func() {
 func TestMinLZRoundTrip(t *testing.T) {
 	// generate random data
 	r := rand.NewChaCha8([32]byte{1, 2, 3, 4})
-	data := make([]byte, 8<<20+1<<10)                       // 8 MiB + 1 KiB
-	if _, err := io.ReadFull(r, data[:8<<20]); err != nil { // fill first 8 MiB with random data, incompressible
+	data := make([]byte, 10<<20) // 10 MB
+	if _, err := io.ReadFull(r, data); err != nil {
 		t.Fatalf("failed to generate random data: %v", err)
 	}
 	// compress with min lz
