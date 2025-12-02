@@ -9,9 +9,9 @@ package iterator
 import (
 	"container/heap"
 
-	"github.com/syndtr/goleveldb/leveldb/comparer"
-	"github.com/syndtr/goleveldb/leveldb/errors"
-	"github.com/syndtr/goleveldb/leveldb/util"
+	"github.com/wavesplatform/goleveldb/leveldb/comparer"
+	"github.com/wavesplatform/goleveldb/leveldb/errors"
+	"github.com/wavesplatform/goleveldb/leveldb/util"
 )
 
 type dir int

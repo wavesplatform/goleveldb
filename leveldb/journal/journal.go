@@ -25,6 +25,7 @@
 // Neither Readers or Writers are safe to use concurrently.
 //
 // Example code:
+//
 //	func read(r io.Reader) ([]string, error) {
 //		var ss []string
 //		journals := journal.NewReader(r, nil, true, true)
@@ -82,9 +83,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/syndtr/goleveldb/leveldb/errors"
-	"github.com/syndtr/goleveldb/leveldb/storage"
-	"github.com/syndtr/goleveldb/leveldb/util"
+	"github.com/wavesplatform/goleveldb/leveldb/errors"
+	"github.com/wavesplatform/goleveldb/leveldb/storage"
+	"github.com/wavesplatform/goleveldb/leveldb/util"
 )
 
 // These constants are part of the wire format and should not be changed.
