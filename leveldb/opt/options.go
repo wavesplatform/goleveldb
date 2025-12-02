@@ -118,6 +118,8 @@ func (c Compression) String() string {
 		return "snappy"
 	case ZSTDCompression:
 		return "zstd"
+	case MinLZCompression:
+		return "minlz"
 	default:
 		return "invalid"
 	}

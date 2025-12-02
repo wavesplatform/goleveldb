@@ -190,7 +190,7 @@ func (w *Writer) writeBlock(buf *util.Buffer, compression opt.Compression) (bh b
 		w.compressionScratch = zstd.EncodeTo(w.compressionScratch[:0], buf.Bytes())
 		n := len(w.compressionScratch)        // compressed size
 		size := n + blockTrailerLen           // total size with trailer
-		if cap(w.compressionScratch) < size { // slow path: cant grow by reslice, need to allocate new
+		if cap(w.compressionScratch) < size { // slow path: can't grow by reslice, need to allocate new
 			old := w.compressionScratch
 			w.compressionScratch = make([]byte, size) // allocate the needed size
 			copy(w.compressionScratch, old)           // copy compressed data
@@ -198,13 +198,13 @@ func (w *Writer) writeBlock(buf *util.Buffer, compression opt.Compression) (bh b
 		b = w.compressionScratch[:size]
 		b[n] = blockTypeZSTDCompression // set block type before checksum
 	case opt.MinLZCompression:
-		w.compressionScratch, err = minLZEncodeTo(w.comparerScratch[:0], buf.Bytes())
+		w.compressionScratch, err = minLZEncodeTo(w.compressionScratch[:0], buf.Bytes())
 		if err != nil {
 			return bh, fmt.Errorf("leveldb/table: Writer: minlz compression failed: %w", err)
 		}
 		n := len(w.compressionScratch)        // compressed size
 		size := n + blockTrailerLen           // total size with trailer
-		if cap(w.compressionScratch) < size { // slow path: cant grow by reslice, need to allocate new
+		if cap(w.compressionScratch) < size { // slow path: can't grow by reslice, need to allocate new
 			old := w.compressionScratch
 			w.compressionScratch = make([]byte, size) // allocate the needed size
 			copy(w.compressionScratch, old)           // copy compressed data
@@ -234,7 +234,7 @@ func (w *Writer) writeBlock(buf *util.Buffer, compression opt.Compression) (bh b
 	return
 }
 
-const uin32tSize = 4
+const uint32Size = 4
 
 var _ = map[bool]struct{}{false: {}, math.MaxUint32 > minlz.MaxBlockSize: {}} // compile-time assert
 
@@ -249,7 +249,7 @@ func minLZEncodeTo(dst, src []byte) ([]byte, error) {
 	)
 	// split src into chunks of max minlz.MaxBlockSize size because minlz can only handle that much data at once
 	for srcPart := range slices.Chunk(src, minlz.MaxBlockSize) {
-		dst = slices.Grow(dst, uin32tSize)[:len(dst)+uin32tSize] // Reserve space for length prefix
+		dst = slices.Grow(dst, uint32Size)[:len(dst)+uint32Size] // Reserve space for length prefix
 		// Fastest compression level has been chosen because it gives decent compression ratio
 		// with very fast compression speed. (better than snappy in both aspects)
 		dst, err = minlz.AppendEncoded(dst, srcPart, minlz.LevelFastest)
@@ -257,7 +257,7 @@ func minLZEncodeTo(dst, src []byte) ([]byte, error) {
 			return nil, err
 		}
 		// Write length prefix
-		compressedSize := uint32(len(dst[pos:]) - uin32tSize)
+		compressedSize := uint32(len(dst[pos:]) - uint32Size)
 		binary.LittleEndian.PutUint32(dst[pos:], compressedSize)
 		pos = len(dst) // Move position to the end of the compressed data
 	}

@@ -144,14 +144,13 @@ NOTE: All fixed-length integer are little-endian.
 Compression types:
 
 Table block may be compressed using one of the following compression types:
-  0: Default compression == Snappy compression
-  1: No compression
-  2: Snappy compression
-  3: ZSTD compression
-  4: MinLZ compression
+  0: No compression
+  1: Snappy compression (default)
+  2: ZSTD compression
+  3: MinLZ compression
 
 The compression type is stored in the last byte of block trailer before the checksum.
-Some checks are performed with max block size as follows:
+Maximum block size constraints are as follows:
 - Snappy compression supports blocks up to 4GiB.
 - ZSTD compression limited to blocks up to 500MiB.
 - MinLZ compression supports blocks up to 8MiB.
