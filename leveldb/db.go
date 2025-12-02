@@ -299,6 +299,10 @@ func RecoverFile(path string, o *opt.Options) (db *DB, err error) {
 }
 
 func validateBlockSizeWithCompressionAlgo(o *opt.Options) error {
+	const (
+		mib              = 1 << 20
+		maxZSTDBlockSize = 500 * mib
+	)
 	if o == nil {
 		return nil
 	}
@@ -312,6 +316,10 @@ func validateBlockSizeWithCompressionAlgo(o *opt.Options) error {
 	case opt.MinLZCompression:
 		if minlz.MaxEncodedLen(blockSize) < 0 {
 			return fmt.Errorf("block size %d too large for minlz compression", blockSize)
+		}
+	case opt.ZSTDCompression:
+		if blockSize > maxZSTDBlockSize {
+			return fmt.Errorf("block size %d too large for zstd compression (max %d)", blockSize, maxZSTDBlockSize)
 		}
 	default:
 		// No validation needed for other compression algorithms.
