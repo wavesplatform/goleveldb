@@ -258,7 +258,7 @@ func minLZEncodeTo(dst, src []byte) ([]byte, error) {
 		}
 		// Write length prefix
 		compressedSize := uint32(len(dst[pos:]) - uin32tSize)
-		binary.BigEndian.PutUint32(dst[pos:], compressedSize)
+		binary.LittleEndian.PutUint32(dst[pos:], compressedSize)
 		pos = len(dst) // Move position to the end of the compressed data
 	}
 	return dst, nil

@@ -668,7 +668,7 @@ func minLZDecodeTo(dst []byte, src []byte) ([]byte, error) {
 		if l := len(src); l < uin32tSize {
 			return nil, fmt.Errorf("minlz insufficient data: need at least %d bytes, got %d bytes", uin32tSize, l)
 		}
-		size := binary.BigEndian.Uint32(src[:uin32tSize])
+		size := binary.LittleEndian.Uint32(src[:uin32tSize])
 		src = src[uin32tSize:]                   // cut off prefix size bytes
 		if l := len(src); uint(l) < uint(size) { // sanity check
 			return nil, fmt.Errorf("minlz invalid size: size=%d > remaining=%d", size, l)
