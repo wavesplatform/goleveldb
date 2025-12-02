@@ -139,6 +139,29 @@ Filter block trailer:
 
 
 NOTE: All fixed-length integer are little-endian.
+
+/*
+Compression types:
+
+Table block may be compressed using one of the following compression types:
+  0: Default compression == Snappy compression
+  1: No compression
+  2: Snappy compression
+  3: ZSTD compression
+  4: MinLZ compression
+
+The compression type is stored in the last byte of block trailer before the checksum.
+Some checks are performed with max block size as follows:
+- Snappy compression supports blocks up to 4GiB.
+- ZSTD compression limited to blocks up to 500MiB.
+- MinLZ compression supports blocks up to 8MiB.
+
+For MinLZ, chunk-based compression and decompression are implemented. Each chunk cannot exceed the maximum block size for MinLZ (8 MiB).
+If the input data exceeds this size, it is split into 8 MiB chunks, each chunk is compressed separately,
+and then all compressed chunks are concatenated together.
+Before each chunk, its size is written as a 4-byte integer in little-endian format.
+During decompression, the process is reversed: the chunk size is read, then the corresponding data is read and decompressed.
+
 */
 
 const (
