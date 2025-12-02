@@ -234,8 +234,6 @@ func (w *Writer) writeBlock(buf *util.Buffer, compression opt.Compression) (bh b
 	return
 }
 
-const uint32Size = 4
-
 var _ = map[bool]struct{}{false: {}, math.MaxUint32 > minlz.MaxBlockSize: {}} // compile-time assert
 
 // minLZEncodeTo appends the encoded data from src to dst.

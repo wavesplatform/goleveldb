@@ -177,6 +177,8 @@ const (
 	blockTypeMinLZCompression  = 3
 )
 
+const uint32Size = 4
+
 type blockHandle struct {
 	offset, length uint64
 }
