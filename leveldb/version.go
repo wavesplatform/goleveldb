@@ -455,7 +455,7 @@ func (p *versionStaging) finish(trivial bool) *version {
 	nv := newVersion(p.base.s)
 	numLevel := max(len(p.base.levels), len(p.levels))
 	nv.levels = make([]tFiles, numLevel)
-	for level := 0; level < numLevel; level++ {
+	for level := range numLevel {
 		var baseTabels tFiles
 		if level < len(p.base.levels) {
 			baseTabels = p.base.levels[level]

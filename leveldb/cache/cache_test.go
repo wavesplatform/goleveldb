@@ -150,7 +150,6 @@ func TestCacheMap(t *testing.T) {
 	var done int32
 
 	for id, param := range params {
-		param := param
 		objects := objects[id]
 		handles := handles[id]
 		for job := 0; job < param.concurrent; job++ {
