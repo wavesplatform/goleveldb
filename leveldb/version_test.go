@@ -309,7 +309,7 @@ func TestVersionReference(t *testing.T) {
 		// Simulate some read operations
 		var wg sync.WaitGroup
 		readN := rand.Intn(300)
-		for i := 0; i < readN; i++ {
+		for range readN {
 			wg.Add(1)
 			go func() {
 				v := s.version()
@@ -401,7 +401,7 @@ func benchmarkVersionStaging(b *testing.B, trivial bool, size int) {
 	}
 
 	rec := &sessionRecord{}
-	for i := 0; i < size; i++ {
+	for i := range size {
 		ik := mik(uint64(i))
 		rec.addTable(1, int64(i), 1, ik, ik)
 	}
@@ -411,10 +411,9 @@ func benchmarkVersionStaging(b *testing.B, trivial bool, size int) {
 	vs.commit(rec)
 	v = vs.finish(false)
 
-	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		rec := &sessionRecord{}
 		index := rand.Intn(size)
 		ik := mik(uint64(index))

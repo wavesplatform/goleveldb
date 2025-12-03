@@ -147,10 +147,9 @@ func benchmarkGetOverlap(b *testing.B, level int, size int) {
 	vs.commit(rec)
 	v = vs.finish(false)
 
-	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		files := v.levels[level]
 		start := rand.Intn(size)
 		end := rand.Intn(size-start) + start

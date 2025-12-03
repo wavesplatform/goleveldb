@@ -64,7 +64,7 @@ func (a arrayInt) String() string {
 
 func (a *arrayInt) Set(str string) error {
 	var na arrayInt
-	for _, s := range strings.Split(str, ",") {
+	for s := range strings.SplitSeq(str, ",") {
 		s = strings.TrimSpace(s)
 		if s != "" {
 			n, err := strconv.Atoi(s)
@@ -334,7 +334,7 @@ func main() {
 	tstor := &testingStorage{stor}
 	defer tstor.Close()
 
-	fatalf := func(err error, format string, v ...interface{}) {
+	fatalf := func(err error, format string, v ...any) {
 		atomic.StoreUint32(&fail, 1)
 		atomic.StoreUint32(&done, 1)
 		log.Printf("FATAL: "+format, v...)

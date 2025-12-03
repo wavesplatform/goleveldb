@@ -70,9 +70,8 @@ func BenchmarkMergedIterator(b *testing.B) {
 	}
 
 	mi := NewMergedIterator(iters, comparer.DefaultComparer, true)
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		mi.First()
 		for mi.Next() {
 			mi.Key()
