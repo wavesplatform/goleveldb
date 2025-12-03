@@ -23,19 +23,19 @@ import (
 )
 
 type tableWrapper struct {
-	*Reader
+	r *Reader
 }
 
 func (t tableWrapper) TestFind(key []byte) (rkey, rvalue []byte, err error) {
-	return t.Reader.Find(key, false, nil)
+	return t.r.Find(key, false, nil)
 }
 
 func (t tableWrapper) TestGet(key []byte) (value []byte, err error) {
-	return t.Reader.Get(key, nil)
+	return t.r.Get(key, nil)
 }
 
 func (t tableWrapper) TestNewIterator(slice *util.Range) iterator.Iterator {
-	return t.Reader.NewIterator(slice, nil)
+	return t.r.NewIterator(slice, nil)
 }
 
 var _ = testutil.Defer(func() {
@@ -115,7 +115,7 @@ var _ = testutil.Defer(func() {
 				return func() {
 					db := Build(*kv)
 					if body != nil {
-						body(db.(tableWrapper).Reader)
+						body(db.(tableWrapper).r)
 					}
 					testutil.KeyValueTesting(nil, *kv, db, nil, nil)
 				}

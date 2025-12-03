@@ -3,7 +3,7 @@
 // license that can be found in the LICENSE file.
 
 // Taken from: https://code.google.com/p/leveldb-go/source/browse/leveldb/record/record.go?r=1d5ccbe03246da926391ee12d1c6caae054ff4b0
-// License, authors and contributors informations can be found at bellow URLs respectively:
+// License, authors and contributors information can be found at bellow URLs respectively:
 // 	https://code.google.com/p/leveldb-go/source/browse/LICENSE
 //	https://code.google.com/p/leveldb-go/source/browse/AUTHORS
 //  https://code.google.com/p/leveldb-go/source/browse/CONTRIBUTORS
@@ -37,7 +37,7 @@
 //			if err != nil {
 //				return nil, err
 //			}
-//			s, err := ioutil.ReadAll(j)
+//			s, err := io.ReadAll(j)
 //			if err != nil {
 //				return nil, err
 //			}

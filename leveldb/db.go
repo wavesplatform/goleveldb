@@ -8,6 +8,7 @@ package leveldb
 
 import (
 	"container/list"
+	stderrs "errors"
 	"fmt"
 	"io"
 	"os"
@@ -609,7 +610,6 @@ func (db *DB) recoverJournal() error {
 					fr.Close()
 					return err
 				}
-				ofd = storage.FileDesc{}
 			}
 
 			// Replay journal to memdb.
@@ -888,10 +888,13 @@ func (db *DB) has(auxm *memdb.DB, auxt tFiles, key []byte, seq uint64, ro *opt.R
 		// Trigger table compaction.
 		db.compTrigger(db.tcompCmdC)
 	}
-	if err == nil {
+	switch {
+	case err == nil:
 		ret = true
-	} else if err == ErrNotFound {
+	case stderrs.Is(err, ErrNotFound):
 		err = nil
+	default:
+		// noop
 	}
 	return
 }

@@ -197,7 +197,9 @@ func (h *dbCorruptHarness) check(min, max int) {
 	iter := db.NewIterator(nil, p.ro)
 	for iter.Next() {
 		k := 0
-		fmt.Sscanf(string(iter.Key()), "%d", &k)
+		if _, err := fmt.Sscanf(string(iter.Key()), "%d", &k); err != nil {
+			t.Fatalf("invalid key format: %q", iter.Key())
+		}
 		if k < n {
 			badk++
 			continue
