@@ -16,9 +16,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/syndtr/goleveldb/leveldb/iterator"
-	"github.com/syndtr/goleveldb/leveldb/opt"
-	"github.com/syndtr/goleveldb/leveldb/storage"
+	"github.com/wavesplatform/goleveldb/leveldb/iterator"
+	"github.com/wavesplatform/goleveldb/leveldb/opt"
+	"github.com/wavesplatform/goleveldb/leveldb/storage"
 )
 
 func randomString(r *rand.Rand, n int) []byte {
