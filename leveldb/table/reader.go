@@ -10,11 +10,15 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/golang/snappy"
+	"github.com/klauspost/compress/zstd"
+	"github.com/minio/minlz"
 
 	"github.com/wavesplatform/goleveldb/leveldb/cache"
 	"github.com/wavesplatform/goleveldb/leveldb/comparer"
@@ -515,6 +519,9 @@ type Reader struct {
 	cache  *cache.NamespaceGetter
 	err    error
 	bpool  *util.BufferPool
+	// Approximate decompressed to compressed ratio.
+	// active only when ZSTD or MinLZ compression is used.
+	approxDecompressedToCompressedRatioBits atomic.Uint64 // float64
 	// Options
 	o              *opt.Options
 	cmp            comparer.Comparer
@@ -559,6 +566,24 @@ func (r *Reader) fixErrCorruptedBH(bh blockHandle, err error) error {
 	return err
 }
 
+const defaultApproxDecompressedToCompressedRatio = 2.0
+
+func (r *Reader) approxDecompressedToCompressedRatio() float64 {
+	ratioBitsUint := r.approxDecompressedToCompressedRatioBits.Load()
+	if ratioBitsUint == 0 { // not yet set
+		return defaultApproxDecompressedToCompressedRatio
+	}
+	return math.Float64frombits(ratioBitsUint)
+}
+
+func (r *Reader) updateApproxDecompressedToCompressedRatio(newRatio float64) {
+	if newRatio < defaultApproxDecompressedToCompressedRatio { // avoid invalid ratio
+		return
+	}
+	newRatioBits := math.Float64bits(newRatio)
+	r.approxDecompressedToCompressedRatioBits.Store(newRatioBits)
+}
+
 func (r *Reader) readRawBlock(bh blockHandle, verifyChecksum bool) ([]byte, error) {
 	data := r.bpool.Get(int(bh.length + blockTrailerLen))
 	if _, err := r.reader.ReadAt(data, int64(bh.offset)); err != nil && err != io.EOF {
@@ -592,11 +617,69 @@ func (r *Reader) readRawBlock(bh blockHandle, verifyChecksum bool) ([]byte, erro
 			return nil, r.newErrCorruptedBH(bh, err.Error())
 		}
 		data = decData
+	case blockTypeZSTDCompression:
+		decRatio := r.approxDecompressedToCompressedRatio()
+		estDecLen := int(float64(bh.length) * decRatio) // estimated decompressed length
+		decData := r.bpool.Get(estDecLen)               // get buffer from pool
+		decData, err := zstd.DecodeTo(decData[:0], data[:bh.length])
+		r.bpool.Put(data)
+		if err != nil {
+			r.bpool.Put(decData)
+			return nil, r.newErrCorruptedBH(bh, err.Error())
+		}
+		data = decData
+		// Update approximate decompressed to compressed ratio.
+		// Only update when the new ratio is greater than the current ratio
+		// to avoid oscillation.
+		if newRatio := float64(len(decData)) / float64(bh.length); newRatio > decRatio {
+			r.updateApproxDecompressedToCompressedRatio(newRatio)
+		}
+	case blockTypeMinLZCompression:
+		decRatio := r.approxDecompressedToCompressedRatio()
+		estDecLen := int(float64(bh.length) * decRatio) // estimated decompressed length
+		decData := r.bpool.Get(estDecLen)               // get buffer from pool
+		decData, err := minLZDecodeTo(decData[:0], data[:bh.length])
+		r.bpool.Put(data)
+		if err != nil {
+			r.bpool.Put(decData)
+			return nil, r.newErrCorruptedBH(bh, err.Error())
+		}
+		data = decData
+		// Update approximate decompressed to compressed ratio.
+		// Only update when the new ratio is greater than the current ratio
+		// to avoid oscillation.
+		if newRatio := float64(len(decData)) / float64(bh.length); newRatio > decRatio {
+			r.updateApproxDecompressedToCompressedRatio(newRatio)
+		}
 	default:
 		r.bpool.Put(data)
 		return nil, r.newErrCorruptedBH(bh, fmt.Sprintf("unknown compression type %#x", data[bh.length]))
 	}
 	return data, nil
+}
+
+// minLZDecodeTo appends the decoded data from src to dst.
+// It returns the decoded data slice (which may be different from dst) or an error.
+// If dst is not large enough, a new buffer will be allocated.
+func minLZDecodeTo(dst []byte, src []byte) ([]byte, error) {
+	dst = dst[:0]
+	var err error
+	for len(src) > 0 {
+		if l := len(src); l < uint32Size {
+			return nil, fmt.Errorf("minlz insufficient data: need at least %d bytes, got %d bytes", uint32Size, l)
+		}
+		size := binary.LittleEndian.Uint32(src[:uint32Size])
+		src = src[uint32Size:]                   // cut off prefix size bytes
+		if l := len(src); uint(l) < uint(size) { // sanity check
+			return nil, fmt.Errorf("minlz invalid size: size=%d > remaining=%d", size, l)
+		}
+		dst, err = minlz.AppendDecoded(dst, src[:size])
+		if err != nil {
+			return nil, fmt.Errorf("minlz append decoded error: %w", err)
+		}
+		src = src[size:] // cut off compressed data bytes
+	}
+	return dst, nil
 }
 
 func (r *Reader) readBlock(bh blockHandle, verifyChecksum bool) (*block, error) {

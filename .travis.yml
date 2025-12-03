@@ -1,12 +1,10 @@
 language: go
 
 before_install:
-  - curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.46.2
+  - curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.6.0
 
 go:
-  - 1.14.x
-  - 1.18.x
-  - tip
+  - 1.24.x
 
 script:
   - go vet ./...

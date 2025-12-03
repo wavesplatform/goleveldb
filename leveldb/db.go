@@ -26,6 +26,9 @@ import (
 	"github.com/wavesplatform/goleveldb/leveldb/storage"
 	"github.com/wavesplatform/goleveldb/leveldb/table"
 	"github.com/wavesplatform/goleveldb/leveldb/util"
+
+	"github.com/golang/snappy"
+	"github.com/minio/minlz"
 )
 
 // DB is a LevelDB database.
@@ -177,6 +180,9 @@ func openDB(s *session) (*DB, error) {
 // The returned DB instance is safe for concurrent use.
 // The DB must be closed after use, by calling Close method.
 func Open(stor storage.Storage, o *opt.Options) (db *DB, err error) {
+	if err = validateBlockSizeWithCompressionAlgo(o); err != nil {
+		return
+	}
 	s, err := newSession(stor, o)
 	if err != nil {
 		return
@@ -220,6 +226,9 @@ func Open(stor storage.Storage, o *opt.Options) (db *DB, err error) {
 // The returned DB instance is safe for concurrent use.
 // The DB must be closed after use, by calling Close method.
 func OpenFile(path string, o *opt.Options) (db *DB, err error) {
+	if err = validateBlockSizeWithCompressionAlgo(o); err != nil {
+		return
+	}
 	stor, err := storage.OpenFile(path, o.GetReadOnly())
 	if err != nil {
 		return
@@ -241,6 +250,9 @@ func OpenFile(path string, o *opt.Options) (db *DB, err error) {
 // The returned DB instance is safe for concurrent use.
 // The DB must be closed after use, by calling Close method.
 func Recover(stor storage.Storage, o *opt.Options) (db *DB, err error) {
+	if err = validateBlockSizeWithCompressionAlgo(o); err != nil {
+		return
+	}
 	s, err := newSession(stor, o)
 	if err != nil {
 		return
@@ -270,6 +282,9 @@ func Recover(stor storage.Storage, o *opt.Options) (db *DB, err error) {
 // The returned DB instance is safe for concurrent use.
 // The DB must be closed after use, by calling Close method.
 func RecoverFile(path string, o *opt.Options) (db *DB, err error) {
+	if err = validateBlockSizeWithCompressionAlgo(o); err != nil {
+		return
+	}
 	stor, err := storage.OpenFile(path, false)
 	if err != nil {
 		return
@@ -281,6 +296,35 @@ func RecoverFile(path string, o *opt.Options) (db *DB, err error) {
 		db.closer = stor
 	}
 	return
+}
+
+func validateBlockSizeWithCompressionAlgo(o *opt.Options) error {
+	const (
+		mib              = 1 << 20
+		maxZSTDBlockSize = 500 * mib
+	)
+	if o == nil {
+		return nil
+	}
+	blockSize := o.GetBlockSize()
+	compression := o.GetCompression()
+	switch compression {
+	case opt.SnappyCompression:
+		if snappy.MaxEncodedLen(blockSize) < 0 { // return a negative value if blockSize is too large to encode
+			return fmt.Errorf("block size %d too large for snappy compression", blockSize)
+		}
+	case opt.MinLZCompression:
+		if minlz.MaxEncodedLen(blockSize) < 0 {
+			return fmt.Errorf("block size %d too large for minlz compression", blockSize)
+		}
+	case opt.ZSTDCompression:
+		if blockSize > maxZSTDBlockSize {
+			return fmt.Errorf("block size %d too large for zstd compression (max %d)", blockSize, maxZSTDBlockSize)
+		}
+	default:
+		// No validation needed for other compression algorithms.
+	}
+	return nil
 }
 
 func recoverTable(s *session, o *opt.Options) error {

@@ -11,8 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"slices"
 
 	"github.com/golang/snappy"
+	"github.com/klauspost/compress/zstd"
+	"github.com/minio/minlz"
 
 	"github.com/wavesplatform/goleveldb/leveldb/comparer"
 	"github.com/wavesplatform/goleveldb/leveldb/filter"
@@ -172,7 +176,8 @@ type Writer struct {
 func (w *Writer) writeBlock(buf *util.Buffer, compression opt.Compression) (bh blockHandle, err error) {
 	// Compress the buffer if necessary.
 	var b []byte
-	if compression == opt.SnappyCompression {
+	switch compression {
+	case opt.SnappyCompression:
 		// Allocate scratch enough for compression and block trailer.
 		if n := snappy.MaxEncodedLen(buf.Len()) + blockTrailerLen; len(w.compressionScratch) < n {
 			w.compressionScratch = make([]byte, n)
@@ -181,10 +186,37 @@ func (w *Writer) writeBlock(buf *util.Buffer, compression opt.Compression) (bh b
 		n := len(compressed)
 		b = compressed[:n+blockTrailerLen]
 		b[n] = blockTypeSnappyCompression
-	} else {
+	case opt.ZSTDCompression:
+		w.compressionScratch = zstd.EncodeTo(w.compressionScratch[:0], buf.Bytes())
+		n := len(w.compressionScratch)        // compressed size
+		size := n + blockTrailerLen           // total size with trailer
+		if cap(w.compressionScratch) < size { // slow path: can't grow by reslice, need to allocate new
+			old := w.compressionScratch
+			w.compressionScratch = make([]byte, size) // allocate the needed size
+			copy(w.compressionScratch, old)           // copy compressed data
+		}
+		b = w.compressionScratch[:size]
+		b[n] = blockTypeZSTDCompression // set block type before checksum
+	case opt.MinLZCompression:
+		w.compressionScratch, err = minLZEncodeTo(w.compressionScratch[:0], buf.Bytes())
+		if err != nil {
+			return bh, fmt.Errorf("leveldb/table: Writer: minlz compression failed: %w", err)
+		}
+		n := len(w.compressionScratch)        // compressed size
+		size := n + blockTrailerLen           // total size with trailer
+		if cap(w.compressionScratch) < size { // slow path: can't grow by reslice, need to allocate new
+			old := w.compressionScratch
+			w.compressionScratch = make([]byte, size) // allocate the needed size
+			copy(w.compressionScratch, old)           // copy compressed data
+		}
+		b = w.compressionScratch[:size]
+		b[n] = blockTypeMinLZCompression // set block type before checksum
+	case opt.NoCompression:
 		tmp := buf.Alloc(blockTrailerLen)
 		tmp[0] = blockTypeNoCompression
 		b = buf.Bytes()
+	default:
+		return bh, fmt.Errorf("leveldb/table: Writer: unknown compression type: %v", compression)
 	}
 
 	// Calculate the checksum.
@@ -200,6 +232,34 @@ func (w *Writer) writeBlock(buf *util.Buffer, compression opt.Compression) (bh b
 	bh = blockHandle{w.offset, uint64(len(b) - blockTrailerLen)}
 	w.offset += uint64(len(b))
 	return
+}
+
+var _ = map[bool]struct{}{false: {}, math.MaxUint32 > minlz.MaxBlockSize: {}} // compile-time assert
+
+// minLZEncodeTo appends the encoded data from src to dst.
+// It returns the compressed data slice (which may share the same underlying array as dst) or an error.
+// If dst is not large enough, a new slice will be allocated.
+func minLZEncodeTo(dst, src []byte) ([]byte, error) {
+	dst = dst[:0]
+	var (
+		err error
+		pos int
+	)
+	// split src into chunks of max minlz.MaxBlockSize size because minlz can only handle that much data at once
+	for srcPart := range slices.Chunk(src, minlz.MaxBlockSize) {
+		dst = slices.Grow(dst, uint32Size)[:len(dst)+uint32Size] // Reserve space for length prefix
+		// Fastest compression level has been chosen because it gives decent compression ratio
+		// with very fast compression speed. (better than snappy in both aspects)
+		dst, err = minlz.AppendEncoded(dst, srcPart, minlz.LevelFastest)
+		if err != nil {
+			return nil, err
+		}
+		// Write length prefix
+		compressedSize := uint32(len(dst[pos:]) - uint32Size)
+		binary.LittleEndian.PutUint32(dst[pos:], compressedSize)
+		pos = len(dst) // Move position to the end of the compressed data
+	}
+	return dst, nil
 }
 
 func (w *Writer) flushPendingBH(key []byte) error {
