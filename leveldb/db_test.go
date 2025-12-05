@@ -1610,7 +1610,9 @@ func TestDB_ClosedIsClosed(t *testing.T) {
 type numberComparer struct{}
 
 func (numberComparer) num(x []byte) (n int) {
-	fmt.Sscan(string(x[1:len(x)-1]), &n)
+	if _, err := fmt.Sscan(string(x[1:len(x)-1]), &n); err != nil {
+		return 0
+	}
 	return
 }
 
@@ -1784,7 +1786,10 @@ func TestDB_Concurrent(t *testing.T) {
 					if err == nil {
 						found++
 						rk, ri, rx := 0, -1, uint32(0)
-						fmt.Sscanf(string(v), "%d.%d.%d", &rk, &ri, &rx)
+
+						if _, sErr := fmt.Sscanf(string(v), "%d.%d.%d", &rk, &ri, &rx); sErr != nil {
+							t.Errorf("invalid value format: %v", sErr)
+						}
 						if rk != k {
 							t.Errorf("invalid key want=%d got=%d", k, rk)
 						}

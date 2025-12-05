@@ -8,7 +8,6 @@ package storage
 
 import (
 	"fmt"
-	"io/ioutil"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -57,10 +56,7 @@ var invalidCases = []string{
 }
 
 func tempDir(t *testing.T) string {
-	dir, err := ioutil.TempDir("", "goleveldb-")
-	if err != nil {
-		t.Fatal(t)
-	}
+	dir := t.TempDir()
 	t.Log("Using temp-dir:", dir)
 	return dir
 }
@@ -102,7 +98,6 @@ func TestFileStorage_MetaSetGet(t *testing.T) {
 			t.Fatalf("Invalid meta (%d): got '%s', want '%s'", i, rfd, fd)
 		}
 	}
-	os.RemoveAll(temp)
 }
 
 func TestFileStorage_Meta(t *testing.T) {
@@ -241,7 +236,7 @@ func TestFileStorage_Meta(t *testing.T) {
 			if cur.corrupt {
 				content = content[:len(content)-1-rand.Intn(3)]
 			}
-			if err := ioutil.WriteFile(filepath.Join(temp, curName), []byte(content), 0644); err != nil {
+			if err := os.WriteFile(filepath.Join(temp, curName), []byte(content), 0644); err != nil {
 				t.Fatal(err)
 			}
 			if cur.manifest {
@@ -274,7 +269,7 @@ func TestFileStorage_Meta(t *testing.T) {
 			if ret.Num != tc.expect {
 				t.Fatalf("invalid num, expect=%d got=%d", tc.expect, ret.Num)
 			}
-			fis, err := ioutil.ReadDir(temp)
+			fis, err := os.ReadDir(temp)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -289,7 +284,6 @@ func TestFileStorage_Meta(t *testing.T) {
 				t.Logf("-> %s", fi.Name())
 			}
 		}
-		os.RemoveAll(temp)
 	}
 }
 
@@ -321,7 +315,6 @@ func TestFileStorage_InvalidFileName(t *testing.T) {
 
 func TestFileStorage_Locking(t *testing.T) {
 	temp := tempDir(t)
-	defer os.RemoveAll(temp)
 
 	p1, err := OpenFile(temp, false)
 	if err != nil {
@@ -364,7 +357,6 @@ func TestFileStorage_Locking(t *testing.T) {
 
 func TestFileStorage_ReadOnlyLocking(t *testing.T) {
 	temp := tempDir(t)
-	defer os.RemoveAll(temp)
 
 	p1, err := OpenFile(temp, false)
 	if err != nil {

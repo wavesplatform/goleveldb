@@ -254,17 +254,19 @@ func (i *blockIter) Seek(key []byte) bool {
 func (i *blockIter) Next() bool {
 	if i.dir == dirEOI || i.err != nil {
 		return false
-	} else if i.dir == dirReleased {
+	}
+	switch i.dir {
+	case dirReleased:
 		i.err = ErrIterReleased
 		return false
-	}
-
-	if i.dir == dirSOI {
+	case dirSOI:
 		i.restartIndex = i.riStart
 		i.offset = i.offsetStart
-	} else if i.dir == dirBackward {
+	case dirBackward:
 		i.prevNode = i.prevNode[:0]
 		i.prevKeys = i.prevKeys[:0]
+	default:
+		// Continuing forward iteration.
 	}
 	for i.offset < i.offsetRealStart {
 		key, value, nShared, n, err := i.block.entry(i.offset)
@@ -305,15 +307,14 @@ func (i *blockIter) Next() bool {
 }
 
 func (i *blockIter) Prev() bool {
-	if i.dir == dirSOI || i.err != nil {
+	var ri int
+	switch {
+	case i.dir == dirSOI || i.err != nil:
 		return false
-	} else if i.dir == dirReleased {
+	case i.dir == dirReleased:
 		i.err = ErrIterReleased
 		return false
-	}
-
-	var ri int
-	if i.dir == dirForward {
+	case i.dir == dirForward:
 		// Change direction.
 		i.offset = i.prevOffset
 		if i.offset == i.offsetRealStart {
@@ -322,7 +323,7 @@ func (i *blockIter) Prev() bool {
 		}
 		ri = i.block.restartIndex(i.restartIndex, i.riLimit, i.offset)
 		i.dir = dirBackward
-	} else if i.dir == dirEOI {
+	case i.dir == dirEOI:
 		// At the end of iterator.
 		i.restartIndex = i.riLimit
 		i.offset = i.offsetLimit
@@ -332,7 +333,7 @@ func (i *blockIter) Prev() bool {
 		}
 		ri = i.riLimit - 1
 		i.dir = dirBackward
-	} else if len(i.prevNode) == 1 {
+	case len(i.prevNode) == 1:
 		// This is the end of a restart range.
 		i.offset = i.prevNode[0]
 		i.prevNode = i.prevNode[:0]
@@ -342,7 +343,7 @@ func (i *blockIter) Prev() bool {
 		}
 		i.restartIndex--
 		ri = i.restartIndex
-	} else {
+	default:
 		// In the middle of restart range, get from cache.
 		n := len(i.prevNode) - 3
 		node := i.prevNode[n:]
@@ -505,7 +506,7 @@ func (i *indexIter) Get() iterator.Iterator {
 	}
 
 	var slice *util.Range
-	if i.slice != nil && (i.blockIter.isFirst() || i.blockIter.isLast()) {
+	if i.slice != nil && (i.isFirst() || i.isLast()) {
 		slice = i.slice
 	}
 	return i.tr.getDataIterErr(dataBH, slice, i.tr.verifyChecksum, i.fillCache)
