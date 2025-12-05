@@ -76,7 +76,7 @@ func TestFileStorage_MetaSetGet(t *testing.T) {
 		t.Fatal("OpenFile: got error: ", err)
 	}
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		num := rand.Int63()
 		fd := FileDesc{Type: TypeManifest, Num: num}
 		w, err := fs.Create(fd)

@@ -63,7 +63,7 @@ func shuffleNodes(nodes mNodes) mNodes {
 
 func generateSortedNodes(nNS, minNKey, maxNKey int) mNodes {
 	var generated mNodes
-	for i := 0; i < nNS; i++ {
+	for i := range nNS {
 		nKey := minNKey
 		if maxNKey-minNKey > 0 {
 			nKey += rand.Intn(maxNKey - minNKey)
@@ -79,7 +79,7 @@ func TestNodesSort(t *testing.T) {
 	testFunc := func(nNS, minNKey, maxNKey int) func(t *testing.T) {
 		return func(t *testing.T) {
 			sorted := generateSortedNodes(nNS, minNKey, maxNKey)
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				shuffled := shuffleNodes(sorted)
 				require.NotEqual(t, sorted, shuffled)
 				shuffled.sort()
@@ -150,8 +150,6 @@ func TestCacheMap(t *testing.T) {
 	var done int32
 
 	for id, param := range params {
-		id := id
-		param := param
 		objects := objects[id]
 		handles := handles[id]
 		for job := 0; job < param.concurrent; job++ {
@@ -307,7 +305,7 @@ func TestLRUCache_GetLatency(t *testing.T) {
 	c := NewCache(NewLRU(5000))
 	wg := &sync.WaitGroup{}
 	until := time.Now().Add(duration)
-	for i := 0; i < concurrentSet; i++ {
+	for i := range concurrentSet {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -321,7 +319,7 @@ func TestLRUCache_GetLatency(t *testing.T) {
 			}
 		}(i)
 	}
-	for i := 0; i < concurrentGet; i++ {
+	for i := range concurrentGet {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -468,7 +466,7 @@ func TestLRUCache_Evict(t *testing.T) {
 	set(c, 2, 2, 6, 1, nil).Release()
 
 	v := 1
-	for ns := 0; ns < 3; ns++ {
+	for ns := range 3 {
 		for key := 1; key < 3; key++ {
 			h := c.Get(uint64(ns), uint64(key), nil)
 			require.NotNilf(t, h, "NS=%d key=%d", ns, key)

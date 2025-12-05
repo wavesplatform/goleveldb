@@ -12,11 +12,9 @@ import (
 )
 
 func BenchmarkCache_InsertRemove(b *testing.B) {
-	b.StopTimer()
 	c := NewCache(nil)
 
-	b.StartTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		c.Get(0, uint64(i), func() (int, Value) {
 			return 1, uint64(i)
 		}).Release()
@@ -26,11 +24,9 @@ func BenchmarkCache_InsertRemove(b *testing.B) {
 }
 
 func BenchmarkCache_Insert(b *testing.B) {
-	b.StopTimer()
 	c := NewCache(nil)
 
-	b.StartTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		c.Get(0, uint64(i), func() (int, Value) {
 			return 1, uint64(i)
 		})
@@ -42,14 +38,14 @@ func BenchmarkCache_Insert(b *testing.B) {
 func BenchmarkCache_Lookup(b *testing.B) {
 	b.StopTimer()
 	c := NewCache(nil)
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		c.Get(0, uint64(i), func() (int, Value) {
 			return 1, uint64(i)
 		})
 	}
 
 	b.StartTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		c.Get(0, uint64(i), nil).Release()
 	}
 	b.ReportMetric(float64(c.Nodes()), "nodes")
@@ -59,14 +55,14 @@ func BenchmarkCache_Lookup(b *testing.B) {
 func BenchmarkCache_AppendRemove(b *testing.B) {
 	b.StopTimer()
 	c := NewCache(nil)
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		c.Get(0, uint64(i), func() (int, Value) {
 			return 1, uint64(i)
 		})
 	}
 
 	b.StartTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		c.Get(1, uint64(i), func() (int, Value) {
 			return 1, uint64(i)
 		}).Release()
@@ -78,14 +74,14 @@ func BenchmarkCache_AppendRemove(b *testing.B) {
 func BenchmarkCache_Append(b *testing.B) {
 	b.StopTimer()
 	c := NewCache(nil)
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		c.Get(0, uint64(i), func() (int, Value) {
 			return 1, uint64(i)
 		})
 	}
 
 	b.StartTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		c.Get(1, uint64(i), func() (int, Value) {
 			return 1, uint64(i)
 		})
@@ -98,14 +94,14 @@ func BenchmarkCache_Delete(b *testing.B) {
 	b.StopTimer()
 	c := NewCache(nil)
 	handles := make([]*Handle, b.N)
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		handles[i] = c.Get(0, uint64(i), func() (int, Value) {
 			return 1, uint64(i)
 		})
 	}
 
 	b.StartTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		handles[i].Release()
 	}
 	b.ReportMetric(float64(c.Nodes()), "nodes")
@@ -135,7 +131,7 @@ func BenchmarkCacheParallel_Insert(b *testing.B) {
 func BenchmarkCacheParallel_Lookup(b *testing.B) {
 	b.StopTimer()
 	c := NewCache(nil)
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		c.Get(0, uint64(i), func() (int, Value) {
 			return 1, uint64(i)
 		})
@@ -156,7 +152,7 @@ func BenchmarkCacheParallel_Lookup(b *testing.B) {
 func BenchmarkCacheParallel_Append(b *testing.B) {
 	b.StopTimer()
 	c := NewCache(nil)
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		c.Get(0, uint64(i), func() (int, Value) {
 			return 1, uint64(i)
 		})
@@ -182,7 +178,7 @@ func BenchmarkCacheParallel_Delete(b *testing.B) {
 	b.StopTimer()
 	c := NewCache(nil)
 	handles := make([]*Handle, b.N)
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		handles[i] = c.Get(0, uint64(i), func() (int, Value) {
 			return 1, uint64(i)
 		})

@@ -453,12 +453,9 @@ func (p *versionStaging) commit(r *sessionRecord) {
 func (p *versionStaging) finish(trivial bool) *version {
 	// Build new version.
 	nv := newVersion(p.base.s)
-	numLevel := len(p.levels)
-	if len(p.base.levels) > numLevel {
-		numLevel = len(p.base.levels)
-	}
+	numLevel := max(len(p.base.levels), len(p.levels))
 	nv.levels = make([]tFiles, numLevel)
-	for level := 0; level < numLevel; level++ {
+	for level := range numLevel {
 		var baseTabels tFiles
 		if level < len(p.base.levels) {
 			baseTabels = p.base.levels[level]

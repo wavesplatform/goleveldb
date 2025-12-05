@@ -233,7 +233,7 @@ func (t *IteratorTesting) SOI() {
 	t.init()
 	t.setAct(IterSOI)
 	gomega.Expect(t.Pos).Should(gomega.BeNumerically("<=", 0), t.Text())
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		t.Prev()
 	}
 	t.post()
@@ -243,7 +243,7 @@ func (t *IteratorTesting) EOI() {
 	t.init()
 	t.setAct(IterEOI)
 	gomega.Expect(t.Pos).Should(gomega.BeNumerically(">=", t.Len()-1), t.Text())
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		t.Next()
 	}
 	t.post()
