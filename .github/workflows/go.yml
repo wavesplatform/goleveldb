@@ -1,0 +1,88 @@
+name: build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      smoke_tests:
+        required: false
+        type: boolean
+        description: 'Run smoke tests'
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && github.event_name != 'workflow_dispatch' }}
+
+permissions: { }
+
+jobs:
+  golangci:
+    name: lint
+    runs-on: ${{ matrix.os }}
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != 'wavesplatform/goleveldb'
+    strategy:
+      matrix:
+        os: [ macos-latest, windows-latest, ubuntu-latest ]
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go 1.24
+        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+        with:
+          go-version: 1.24.x
+          check-latest: true
+          cache: false # don't save & restore build caches because golangci-lint action does it internally
+
+      - name: Get dependencies
+        run: go mod vendor
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v8
+        with:
+          version: latest
+          args: -c .golangci.yml
+#      # Check for modern Go code patterns
+#      - name: modernize check
+#        run: go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest ./...
+
+  build:
+    name: ubuntu
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != 'wavesplatform/goleveldb'
+
+    steps:
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go 1.24
+        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+        with:
+          go-version: 1.24.x
+          check-latest: true
+          cache: true
+
+      - name: Set up GolangCI-Lint
+        run: curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh| sh -s -- -b $HOME/bin latest
+
+      - name: Get dependencies
+        run: go mod vendor
+
+      - name: Build and test with race detector
+        run: export PATH="$HOME/bin:$PATH"; make ci
+
+#      - name: Upload coverage to Codecov
+#        uses: codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5
+#        if: github.repository == 'wavesplatform/goleveldb' # disable for forks
+#        with:
+#          token: ${{ secrets.CODECOV_TOKEN }}
+#          file: ./coverage.txt
+#          flags: unittests
+#          yml: ./codecov.yml
