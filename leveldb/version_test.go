@@ -310,13 +310,11 @@ func TestVersionReference(t *testing.T) {
 		var wg sync.WaitGroup
 		readN := rand.Intn(300)
 		for range readN {
-			wg.Add(1)
-			go func() {
+			wg.Go(func() {
 				v := s.version()
 				time.Sleep(time.Millisecond * time.Duration(rand.Intn(300)))
 				v.release()
-				wg.Done()
-			}()
+			})
 		}
 
 		v := s.version()
