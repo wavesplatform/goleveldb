@@ -153,9 +153,7 @@ func TestCacheMap(t *testing.T) {
 		objects := objects[id]
 		handles := handles[id]
 		for job := 0; job < param.concurrent; job++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 
 				r := rand.New(rand.NewSource(time.Now().UnixNano()))
 				for j := len(objects) * param.repeat; j >= 0; j-- {
@@ -179,7 +177,7 @@ func TestCacheMap(t *testing.T) {
 						h.Release()
 					}
 				}
-			}()
+			})
 		}
 
 		// Randomly release handles at interval.

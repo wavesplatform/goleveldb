@@ -512,12 +512,16 @@ func (s *Storage) ForceRename(oldfd, newfd storage.FileDesc) (err error) {
 }
 
 func (s *Storage) openFiles() string {
-	out := "Open files:"
+	var out strings.Builder
+	out.WriteString("Open files:")
 	for x, writer := range s.opens {
 		fd := unpackFile(x)
-		out += fmt.Sprintf("\n · fd=%s writer=%v", fd, writer)
+		_, err := fmt.Fprintf(&out, "\n · fd=%s writer=%v", fd, writer)
+		if err != nil {
+			panic(fmt.Errorf("failed to write to string builder: %w", err))
+		}
 	}
-	return out
+	return out.String()
 }
 
 func (s *Storage) CloseCheck() {
