@@ -2945,11 +2945,9 @@ func TestDB_GracefulClose(t *testing.T) {
 	for i := range 1000000 {
 		if !closing && h.totalTables() > 3 {
 			t.Logf("close db during write, index=%d", i)
-			closeWait.Add(1)
-			go func() {
+			closeWait.Go(func() {
 				h.closeDB()
-				closeWait.Done()
-			}()
+			})
 			closing = true
 		}
 		if err := h.db.Put(fmt.Appendf(nil, "%09d", i), fmt.Appendf(nil, "VAL-%09d", i), h.wo); err != nil {
@@ -2966,11 +2964,9 @@ func TestDB_GracefulClose(t *testing.T) {
 	for i := 0; i < n; i++ {
 		if !closing && i > n/2 {
 			t.Logf("close db during read, index=%d", i)
-			closeWait.Add(1)
-			go func() {
+			closeWait.Go(func() {
 				h.closeDB()
-				closeWait.Done()
-			}()
+			})
 			closing = true
 		}
 		if _, err := h.db.Get(fmt.Appendf(nil, "%09d", i), h.ro); err != nil {
@@ -2990,11 +2986,9 @@ func TestDB_GracefulClose(t *testing.T) {
 		}
 		if !closing {
 			t.Logf("close db during iter, index=%d", i)
-			closeWait.Add(1)
-			go func() {
+			closeWait.Go(func() {
 				h.closeDB()
-				closeWait.Done()
-			}()
+			})
 			closing = true
 		}
 		time.Sleep(time.Millisecond)

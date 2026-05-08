@@ -52,14 +52,14 @@ var (
 type arrayInt []int
 
 func (a arrayInt) String() string {
-	var str string
+	var str strings.Builder
 	for i, n := range a {
 		if i > 0 {
-			str += ","
+			str.WriteString(",")
 		}
-		str += strconv.Itoa(n)
+		str.WriteString(strconv.Itoa(n))
 	}
-	return str
+	return str.String()
 }
 
 func (a *arrayInt) Set(str string) error {
