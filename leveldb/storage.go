@@ -1,14 +1,15 @@
 package leveldb
 
 import (
-	"github.com/wavesplatform/goleveldb/leveldb/storage"
 	"sync/atomic"
+
+	"github.com/wavesplatform/goleveldb/leveldb/storage"
 )
 
 type iStorage struct {
 	storage.Storage
-	read  uint64
-	write uint64
+	read  atomic.Uint64
+	write atomic.Uint64
 }
 
 func (c *iStorage) Open(fd storage.FileDesc) (storage.Reader, error) {
@@ -22,16 +23,16 @@ func (c *iStorage) Create(fd storage.FileDesc) (storage.Writer, error) {
 }
 
 func (c *iStorage) reads() uint64 {
-	return atomic.LoadUint64(&c.read)
+	return c.read.Load()
 }
 
 func (c *iStorage) writes() uint64 {
-	return atomic.LoadUint64(&c.write)
+	return c.write.Load()
 }
 
 // newIStorage returns the given storage wrapped by iStorage.
 func newIStorage(s storage.Storage) *iStorage {
-	return &iStorage{s, 0, 0}
+	return &iStorage{Storage: s}
 }
 
 type iStorageReader struct {
@@ -41,13 +42,13 @@ type iStorageReader struct {
 
 func (r *iStorageReader) Read(p []byte) (n int, err error) {
 	n, err = r.Reader.Read(p)
-	atomic.AddUint64(&r.c.read, uint64(n))
+	r.c.read.Add(uint64(n))
 	return n, err
 }
 
 func (r *iStorageReader) ReadAt(p []byte, off int64) (n int, err error) {
 	n, err = r.Reader.ReadAt(p, off)
-	atomic.AddUint64(&r.c.read, uint64(n))
+	r.c.read.Add(uint64(n))
 	return n, err
 }
 
@@ -58,6 +59,6 @@ type iStorageWriter struct {
 
 func (w *iStorageWriter) Write(p []byte) (n int, err error) {
 	n, err = w.Writer.Write(p)
-	atomic.AddUint64(&w.c.write, uint64(n))
+	w.c.write.Add(uint64(n))
 	return n, err
 }
