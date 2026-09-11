@@ -20,11 +20,7 @@ fmtcheck:
 	@gofmt -l -s $(SOURCE_DIRS) | grep ".*\.go"; if [ "$$?" = "0" ]; then exit 1; fi
 
 modernize-check:
-	@bash -lc 'set -o pipefail; \
-	output=$$(go run golang.org/x/tools/go/analysis/passes/modernize/cmd/modernize@v0.50.0 ./... 2>&1 | \
-	sed -E "/\.(pb|gen)\.go|mock|_string\.go|^exit status|^go: downloading/d"); \
- 	status=$$?; \
- 	if [ "$$status" -ne 0 ] || [ -n "$$output" ]; then echo "$$output"; exit 1; fi'
+	go run golang.org/x/tools/go/analysis/passes/modernize/cmd/modernize@v0.50.0 ./...
 
 gotest:
 	go test -short -timeout 1h ./...
