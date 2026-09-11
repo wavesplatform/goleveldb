@@ -167,13 +167,13 @@ func (b *mBucket) get(r *Cache, h *mHead, hash uint32, ns, key uint64, getOnly b
 	b.mu.Unlock()
 
 	// Update counter.
-	grow := atomic.AddInt64(&r.statNodes, 1) >= h.growThreshold
+	grow := r.statNodes.Add(1) >= h.growThreshold
 	if bLen > mOverflowThreshold {
-		grow = grow || atomic.AddInt32(&h.overflow, 1) >= mOverflowGrowThreshold
+		grow = grow || h.overflow.Add(1) >= mOverflowGrowThreshold
 	}
 
 	// Grow.
-	if grow && atomic.CompareAndSwapInt32(&h.resizeInProgress, 0, 1) {
+	if grow && h.resizeInProgress.CompareAndSwap(0, 1) {
 		nhLen := len(h.buckets) << 1
 		nh := &mHead{
 			buckets:         make([]mBucket, nhLen),
@@ -186,7 +186,7 @@ func (b *mBucket) get(r *Cache, h *mHead, hash uint32, ns, key uint64, getOnly b
 		if !ok {
 			panic("BUG: failed swapping head")
 		}
-		atomic.AddInt32(&r.statGrow, 1)
+		r.statGrow.Add(1)
 		go nh.initBuckets()
 	}
 
@@ -236,14 +236,14 @@ func (b *mBucket) delete(r *Cache, h *mHead, hash uint32, ns, key uint64) (done,
 		}
 
 		// Update counter.
-		atomic.AddInt64(&r.statSize, int64(n.size)*-1)
-		shrink := atomic.AddInt64(&r.statNodes, -1) < h.shrinkThreshold
+		r.statSize.Add(int64(n.size) * -1)
+		shrink := r.statNodes.Add(-1) < h.shrinkThreshold
 		if bLen >= mOverflowThreshold {
-			atomic.AddInt32(&h.overflow, -1)
+			h.overflow.Add(-1)
 		}
 
 		// Shrink.
-		if shrink && len(h.buckets) > mInitialSize && atomic.CompareAndSwapInt32(&h.resizeInProgress, 0, 1) {
+		if shrink && len(h.buckets) > mInitialSize && h.resizeInProgress.CompareAndSwap(0, 1) {
 			nhLen := len(h.buckets) >> 1
 			nh := &mHead{
 				buckets:         make([]mBucket, nhLen),
@@ -256,7 +256,7 @@ func (b *mBucket) delete(r *Cache, h *mHead, hash uint32, ns, key uint64) (done,
 			if !ok {
 				panic("BUG: failed swapping head")
 			}
-			atomic.AddInt32(&r.statShrink, 1)
+			r.statShrink.Add(1)
 			go nh.initBuckets()
 		}
 	}
@@ -268,9 +268,9 @@ type mHead struct {
 	buckets          []mBucket
 	mask             uint32
 	predecessor      unsafe.Pointer // *mNode
-	resizeInProgress int32
+	resizeInProgress atomic.Int32
 
-	overflow        int32
+	overflow        atomic.Int32
 	growThreshold   int64
 	shrinkThreshold int64
 }
@@ -371,14 +371,14 @@ type Cache struct {
 	cacher Cacher
 	closed bool
 
-	statNodes  int64
-	statSize   int64
-	statGrow   int32
-	statShrink int32
-	statHit    int64
-	statMiss   int64
-	statSet    int64
-	statDel    int64
+	statNodes  atomic.Int64
+	statSize   atomic.Int64
+	statGrow   atomic.Int32
+	statShrink atomic.Int32
+	statHit    atomic.Int64
+	statMiss   atomic.Int64
+	statSet    atomic.Int64
+	statDel    atomic.Int64
 }
 
 // NewCache creates a new 'cache map'. The cacher is optional and
@@ -430,25 +430,25 @@ func (r *Cache) delete(n *Node) bool {
 func (r *Cache) GetStats() Stats {
 	return Stats{
 		Buckets:     len((*mHead)(atomic.LoadPointer(&r.mHead)).buckets),
-		Nodes:       atomic.LoadInt64(&r.statNodes),
-		Size:        atomic.LoadInt64(&r.statSize),
-		GrowCount:   atomic.LoadInt32(&r.statGrow),
-		ShrinkCount: atomic.LoadInt32(&r.statShrink),
-		HitCount:    atomic.LoadInt64(&r.statHit),
-		MissCount:   atomic.LoadInt64(&r.statMiss),
-		SetCount:    atomic.LoadInt64(&r.statSet),
-		DelCount:    atomic.LoadInt64(&r.statDel),
+		Nodes:       r.statNodes.Load(),
+		Size:        r.statSize.Load(),
+		GrowCount:   r.statGrow.Load(),
+		ShrinkCount: r.statShrink.Load(),
+		HitCount:    r.statHit.Load(),
+		MissCount:   r.statMiss.Load(),
+		SetCount:    r.statSet.Load(),
+		DelCount:    r.statDel.Load(),
 	}
 }
 
 // Nodes returns number of 'cache node' in the map.
 func (r *Cache) Nodes() int {
-	return int(atomic.LoadInt64(&r.statNodes))
+	return int(r.statNodes.Load())
 }
 
 // Size returns sums of 'cache node' size in the map.
 func (r *Cache) Size() int {
-	return int(atomic.LoadInt64(&r.statSize))
+	return int(r.statSize.Load())
 }
 
 // Capacity returns cache capacity.
@@ -485,9 +485,9 @@ func (r *Cache) Get(ns, key uint64, setFunc func() (size int, value Value)) *Han
 		done, created, n := b.get(r, h, hash, ns, key, setFunc == nil)
 		if done {
 			if created || n == nil {
-				atomic.AddInt64(&r.statMiss, 1)
+				r.statMiss.Add(1)
 			} else {
-				atomic.AddInt64(&r.statHit, 1)
+				r.statHit.Add(1)
 			}
 
 			if n != nil {
@@ -506,8 +506,8 @@ func (r *Cache) Get(ns, key uint64, setFunc func() (size int, value Value)) *Han
 						n.unRefInternal(false)
 						return nil
 					}
-					atomic.AddInt64(&r.statSet, 1)
-					atomic.AddInt64(&r.statSize, int64(n.size))
+					r.statSet.Add(1)
+					r.statSize.Add(int64(n.size))
 				}
 				n.mu.Unlock()
 				if r.cacher != nil {
@@ -744,7 +744,7 @@ func (n *Node) unRefInternal(updateStat bool) {
 	if atomic.AddInt32(&n.ref, -1) == 0 {
 		n.r.delete(n)
 		if updateStat {
-			atomic.AddInt64(&n.r.statDel, 1)
+			n.r.statDel.Add(1)
 		}
 	}
 }
@@ -756,7 +756,7 @@ func (n *Node) unRefExternal() {
 			n.callFinalizer()
 		} else {
 			n.r.delete(n)
-			atomic.AddInt64(&n.r.statDel, 1)
+			n.r.statDel.Add(1)
 		}
 		n.r.mu.RUnlock()
 	}

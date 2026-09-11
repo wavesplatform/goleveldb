@@ -11,7 +11,7 @@ Installation
 Requirements
 -----------
 
-* Need at least `go1.25` or newer.
+* Requires Go 1.27 or newer.
 
 Usage
 -----------

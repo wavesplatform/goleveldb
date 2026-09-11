@@ -490,11 +490,11 @@ func BenchmarkDBReadConcurrent2(b *testing.B) {
 	b.ResetTimer()
 	b.SetBytes(116)
 
-	var dir uint32
+	var dir atomic.Uint32
 	b.RunParallel(func(pb *testing.PB) {
 		iter := p.newIter()
 		defer iter.Release()
-		if atomic.AddUint32(&dir, 1)%2 == 0 {
+		if dir.Add(1)%2 == 0 {
 			for pb.Next() && iter.Next() {
 			}
 		} else {
