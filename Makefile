@@ -22,8 +22,9 @@ fmtcheck:
 modernize-check:
 	@bash -lc 'set -o pipefail; \
 	output=$$(go run golang.org/x/tools/go/analysis/passes/modernize/cmd/modernize@v0.50.0 ./... 2>&1 | \
-		grep -vE "\.(pb|gen)\.go|mock|_string.go|^exit status|^go: downloading"); \
-	[ -n "$$output" ] && { echo "$$output"; exit 1; } || exit 0;'
+	sed -E "/\.(pb|gen)\.go|mock|_string\.go|^exit status|^go: downloading/d"); \
+ 	status=$$?; \
+ 	if [ "$$status" -ne 0 ] || [ -n "$$output" ]; then echo "$$output"; exit 1; fi'
 
 gotest:
 	go test -short -timeout 1h ./...
