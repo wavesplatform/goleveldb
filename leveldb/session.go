@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/wavesplatform/goleveldb/leveldb/errors"
 	"github.com/wavesplatform/goleveldb/leveldb/journal"
@@ -36,10 +37,10 @@ func newErrManifestCorrupted(fd storage.FileDesc, field, reason string) error {
 // session represent a persistent database session.
 type session struct {
 	// Need 64-bit alignment.
-	stNextFileNum    int64 // current unused file number
-	stJournalNum     int64 // current journal file number; need external synchronization
-	stPrevJournalNum int64 // prev journal file number; no longer used; for compatibility with older version of leveldb
-	stTempFileNum    int64
+	stNextFileNum    atomic.Int64 // current unused file number
+	stJournalNum     int64        // current journal file number; need external synchronization
+	stPrevJournalNum int64        // prev journal file number; no longer used; for compatibility with older version of leveldb
+	stTempFileNum    atomic.Int64
 	stSeqNum         uint64 // last mem compacted seq; need external synchronization
 
 	stor     *iStorage

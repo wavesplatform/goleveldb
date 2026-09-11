@@ -112,10 +112,10 @@ func BenchmarkCacheParallel_Insert(b *testing.B) {
 	b.StopTimer()
 	c := NewCache(nil)
 
-	var ns uint64
+	var ns atomic.Uint64
 	b.StartTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		ns := atomic.AddUint64(&ns, 1)
+		ns := ns.Add(1)
 		i := uint64(0)
 		for pb.Next() {
 			c.Get(ns, i, func() (int, Value) {
@@ -137,11 +137,11 @@ func BenchmarkCacheParallel_Lookup(b *testing.B) {
 		})
 	}
 
-	var counter uint64
+	var counter atomic.Uint64
 	b.StartTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			i := atomic.AddUint64(&counter, 1) - 1
+			i := counter.Add(1) - 1
 			c.Get(0, i, nil).Release()
 		}
 	})
@@ -158,10 +158,10 @@ func BenchmarkCacheParallel_Append(b *testing.B) {
 		})
 	}
 
-	var ns uint64
+	var ns atomic.Uint64
 	b.StartTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		ns := atomic.AddUint64(&ns, 1)
+		ns := ns.Add(1)
 		i := uint64(0)
 		for pb.Next() {
 			c.Get(ns, i, func() (int, Value) {
@@ -184,11 +184,11 @@ func BenchmarkCacheParallel_Delete(b *testing.B) {
 		})
 	}
 
-	var counter int64
+	var counter atomic.Int64
 	b.StartTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			i := atomic.AddInt64(&counter, 1) - 1
+			i := counter.Add(1) - 1
 			handles[i].Release()
 		}
 	})

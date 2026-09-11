@@ -38,16 +38,16 @@ type DB struct {
 	seq uint64
 
 	// Stats. Need 64-bit alignment.
-	cWriteDelay            int64 // The cumulative duration of write delays
-	cWriteDelayN           int32 // The cumulative number of write delays
-	inWritePaused          int32 // The indicator whether write operation is paused by compaction
+	cWriteDelay            atomic.Int64 // The cumulative duration of write delays
+	cWriteDelayN           atomic.Int32 // The cumulative number of write delays
+	inWritePaused          atomic.Int32 // The indicator whether write operation is paused by compaction
 	aliveSnaps, aliveIters int32
 
 	// Compaction statistic
-	memComp       uint32 // The cumulative number of memory compaction
-	level0Comp    uint32 // The cumulative number of level0 compaction
-	nonLevel0Comp uint32 // The cumulative number of non-level0 compaction
-	seekComp      uint32 // The cumulative number of seek compaction
+	memComp       atomic.Uint32 // The cumulative number of memory compaction
+	level0Comp    atomic.Uint32 // The cumulative number of level0 compaction
+	nonLevel0Comp atomic.Uint32 // The cumulative number of non-level0 compaction
+	seekComp      atomic.Uint32 // The cumulative number of seek compaction
 
 	// Session.
 	s *session
@@ -91,7 +91,7 @@ type DB struct {
 	// Close.
 	closeW sync.WaitGroup
 	closeC chan struct{}
-	closed uint32
+	closed atomic.Uint32
 	closer io.Closer
 }
 
@@ -1051,14 +1051,14 @@ func (db *DB) GetProperty(name string) (value string, err error) {
 			totalTables, float64(totalSize)/1048576.0, totalDuration.Seconds(),
 			float64(totalRead)/1048576.0, float64(totalWrite)/1048576.0)
 	case p == "compcount":
-		value = fmt.Sprintf("MemComp:%d Level0Comp:%d NonLevel0Comp:%d SeekComp:%d", atomic.LoadUint32(&db.memComp), atomic.LoadUint32(&db.level0Comp), atomic.LoadUint32(&db.nonLevel0Comp), atomic.LoadUint32(&db.seekComp))
+		value = fmt.Sprintf("MemComp:%d Level0Comp:%d NonLevel0Comp:%d SeekComp:%d", db.memComp.Load(), db.level0Comp.Load(), db.nonLevel0Comp.Load(), db.seekComp.Load())
 	case p == "iostats":
 		value = fmt.Sprintf("Read(MB):%.5f Write(MB):%.5f",
 			float64(db.s.stor.reads())/1048576.0,
 			float64(db.s.stor.writes())/1048576.0)
 	case p == "writedelay":
-		writeDelayN, writeDelay := atomic.LoadInt32(&db.cWriteDelayN), time.Duration(atomic.LoadInt64(&db.cWriteDelay))
-		paused := atomic.LoadInt32(&db.inWritePaused) == 1
+		writeDelayN, writeDelay := db.cWriteDelayN.Load(), time.Duration(db.cWriteDelay.Load())
+		paused := db.inWritePaused.Load() == 1
 		value = fmt.Sprintf("DelayN:%d Delay:%s Paused:%t", writeDelayN, writeDelay, paused)
 	case p == "sstables":
 		for level, tables := range v.levels {
@@ -1127,9 +1127,9 @@ func (db *DB) Stats(s *DBStats) error {
 
 	s.IORead = db.s.stor.reads()
 	s.IOWrite = db.s.stor.writes()
-	s.WriteDelayCount = atomic.LoadInt32(&db.cWriteDelayN)
-	s.WriteDelayDuration = time.Duration(atomic.LoadInt64(&db.cWriteDelay))
-	s.WritePaused = atomic.LoadInt32(&db.inWritePaused) == 1
+	s.WriteDelayCount = db.cWriteDelayN.Load()
+	s.WriteDelayDuration = time.Duration(db.cWriteDelay.Load())
+	s.WritePaused = db.inWritePaused.Load() == 1
 
 	s.OpenedTablesCount = db.s.tops.fileCache.Size()
 	if db.s.tops.blockCache != nil {
@@ -1166,10 +1166,10 @@ func (db *DB) Stats(s *DBStats) error {
 		s.LevelSizes = append(s.LevelSizes, tables.size())
 		s.LevelTablesCounts = append(s.LevelTablesCounts, len(tables))
 	}
-	s.MemComp = atomic.LoadUint32(&db.memComp)
-	s.Level0Comp = atomic.LoadUint32(&db.level0Comp)
-	s.NonLevel0Comp = atomic.LoadUint32(&db.nonLevel0Comp)
-	s.SeekComp = atomic.LoadUint32(&db.seekComp)
+	s.MemComp = db.memComp.Load()
+	s.Level0Comp = db.level0Comp.Load()
+	s.NonLevel0Comp = db.nonLevel0Comp.Load()
+	s.SeekComp = db.seekComp.Load()
 	return nil
 }
 

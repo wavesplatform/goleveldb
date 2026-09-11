@@ -1756,7 +1756,7 @@ func TestDB_Concurrent(t *testing.T) {
 
 	var (
 		closeWg sync.WaitGroup
-		stop    uint32
+		stop    atomic.Uint32
 		cnt     [n]uint32
 	)
 
@@ -1771,7 +1771,7 @@ func TestDB_Concurrent(t *testing.T) {
 			}()
 
 			rnd := rand.New(rand.NewSource(int64(1000 + i)))
-			for atomic.LoadUint32(&stop) == 0 {
+			for stop.Load() == 0 {
 				x := cnt[i]
 
 				k := rnd.Intn(maxkey)
@@ -1812,7 +1812,7 @@ func TestDB_Concurrent(t *testing.T) {
 	}
 
 	time.Sleep(secs * time.Second)
-	atomic.StoreUint32(&stop, 1)
+	stop.Store(1)
 	closeWg.Wait()
 }
 
@@ -1825,13 +1825,13 @@ func TestDB_ConcurrentIterator(t *testing.T) {
 
 	var (
 		closeWg sync.WaitGroup
-		stop    uint32
+		stop    atomic.Uint32
 	)
 
 	for i := range n {
 		closeWg.Add(1)
 		go func(i int) {
-			for k := 0; atomic.LoadUint32(&stop) == 0; k++ {
+			for k := 0; stop.Load() == 0; k++ {
 				h.put(fmt.Sprintf("k%d", k), fmt.Sprintf("%d.%d.", k, i)+strings.Repeat("x", 10))
 			}
 			closeWg.Done()
@@ -1841,7 +1841,7 @@ func TestDB_ConcurrentIterator(t *testing.T) {
 	for i := range n {
 		closeWg.Add(1)
 		go func(i int) {
-			for k := 1000000; k < 0 || atomic.LoadUint32(&stop) == 0; k-- {
+			for k := 1000000; k < 0 || stop.Load() == 0; k-- {
 				h.put(fmt.Sprintf("k%d", k), fmt.Sprintf("%d.%d.", k, i)+strings.Repeat("x", 10))
 			}
 			closeWg.Done()
@@ -1884,7 +1884,7 @@ func TestDB_ConcurrentIterator(t *testing.T) {
 		}(i)
 	}
 
-	atomic.StoreUint32(&stop, 1)
+	stop.Store(1)
 	closeWg.Wait()
 }
 
@@ -2077,17 +2077,17 @@ func TestDB_GoleveldbIssue74(t *testing.T) {
 	until := time.Now().Add(dur)
 	wg := new(sync.WaitGroup)
 	wg.Add(2)
-	var done uint32
+	var done atomic.Uint32
 	go func() {
 		var i int
 		defer func() {
 			t.Logf("WRITER DONE #%d", i)
-			atomic.StoreUint32(&done, 1)
+			done.Store(1)
 			wg.Done()
 		}()
 
 		b := new(Batch)
-		for ; time.Now().Before(until) && atomic.LoadUint32(&done) == 0; i++ {
+		for ; time.Now().Before(until) && done.Load() == 0; i++ {
 			if t.Failed() {
 				return
 			}
@@ -2139,10 +2139,10 @@ func TestDB_GoleveldbIssue74(t *testing.T) {
 		var i int
 		defer func() {
 			t.Logf("READER DONE #%d", i)
-			atomic.StoreUint32(&done, 1)
+			done.Store(1)
 			wg.Done()
 		}()
-		for ; time.Now().Before(until) && atomic.LoadUint32(&done) == 0; i++ {
+		for ; time.Now().Before(until) && done.Load() == 0; i++ {
 			if t.Failed() {
 				return
 			}
@@ -2236,7 +2236,7 @@ func TestDB_GoleveldbIssue72and83(t *testing.T) {
 	until := time.Now().Add(dur)
 	wg := new(sync.WaitGroup)
 	wg.Add(3)
-	var done uint32
+	var done atomic.Uint32
 	go func() {
 		i := 0
 		defer func() {
@@ -2245,7 +2245,7 @@ func TestDB_GoleveldbIssue72and83(t *testing.T) {
 		}()
 
 		b := new(Batch)
-		for ; i < wn && atomic.LoadUint32(&done) == 0; i++ {
+		for ; i < wn && done.Load() == 0; i++ {
 			if t.Failed() {
 				return
 			}
@@ -2257,7 +2257,7 @@ func TestDB_GoleveldbIssue72and83(t *testing.T) {
 				b.Put(k1, k2)
 			}
 			if err := h.db.Write(b, h.wo); err != nil {
-				atomic.StoreUint32(&done, 1)
+				done.Store(1)
 				t.Errorf("WRITER #%d db.Write: %v", i, err)
 				return
 			}
@@ -2267,10 +2267,10 @@ func TestDB_GoleveldbIssue72and83(t *testing.T) {
 		var i int
 		defer func() {
 			t.Logf("READER0 DONE #%d", i)
-			atomic.StoreUint32(&done, 1)
+			done.Store(1)
 			wg.Done()
 		}()
-		for ; time.Now().Before(until) && atomic.LoadUint32(&done) == 0; i++ {
+		for ; time.Now().Before(until) && done.Load() == 0; i++ {
 			if t.Failed() {
 				return
 			}
@@ -2328,10 +2328,10 @@ func TestDB_GoleveldbIssue72and83(t *testing.T) {
 		var i int
 		defer func() {
 			t.Logf("READER1 DONE #%d", i)
-			atomic.StoreUint32(&done, 1)
+			done.Store(1)
 			wg.Done()
 		}()
-		for ; time.Now().Before(until) && atomic.LoadUint32(&done) == 0; i++ {
+		for ; time.Now().Before(until) && done.Load() == 0; i++ {
 			if t.Failed() {
 				return
 			}

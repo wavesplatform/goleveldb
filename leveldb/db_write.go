@@ -7,7 +7,6 @@
 package leveldb
 
 import (
-	"sync/atomic"
 	"time"
 
 	"github.com/wavesplatform/goleveldb/leveldb/memdb"
@@ -90,10 +89,10 @@ func (db *DB) flush(n int) (mdb *memDB, mdbFree int, err error) {
 		case tLen >= pauseTrigger:
 			delayed = true
 			// Set the write paused flag explicitly.
-			atomic.StoreInt32(&db.inWritePaused, 1)
+			db.inWritePaused.Store(1)
 			err = db.compTriggerWait(db.tcompCmdC)
 			// Unset the write paused flag.
-			atomic.StoreInt32(&db.inWritePaused, 0)
+			db.inWritePaused.Store(0)
 			if err != nil {
 				return false
 			}
@@ -122,8 +121,8 @@ func (db *DB) flush(n int) (mdb *memDB, mdbFree int, err error) {
 		db.writeDelayN++
 	} else if db.writeDelayN > 0 {
 		db.logf("db@write was delayed N·%d T·%v", db.writeDelayN, db.writeDelay)
-		atomic.AddInt32(&db.cWriteDelayN, int32(db.writeDelayN))
-		atomic.AddInt64(&db.cWriteDelay, int64(db.writeDelay))
+		db.cWriteDelayN.Add(int32(db.writeDelayN))
+		db.cWriteDelay.Add(int64(db.writeDelay))
 		db.writeDelay = 0
 		db.writeDelayN = 0
 	}
