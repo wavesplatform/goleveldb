@@ -9,7 +9,6 @@ package leveldb
 import (
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/wavesplatform/goleveldb/leveldb/errors"
@@ -331,7 +330,7 @@ func (db *DB) memCompaction() {
 		stats.write += r.size
 	}
 	db.compStats.addStat(flushLevel, stats)
-	atomic.AddUint32(&db.memComp, 1)
+	db.memComp.Add(1)
 
 	// Drop frozen memdb.
 	db.dropFrozenMem()
@@ -605,11 +604,11 @@ func (db *DB) tableCompaction(c *compaction, noTrivial bool) {
 	}
 	switch c.typ {
 	case level0Compaction:
-		atomic.AddUint32(&db.level0Comp, 1)
+		db.level0Comp.Add(1)
 	case nonLevel0Compaction:
-		atomic.AddUint32(&db.nonLevel0Comp, 1)
+		db.nonLevel0Comp.Add(1)
 	case seekCompaction:
-		atomic.AddUint32(&db.seekComp, 1)
+		db.seekComp.Add(1)
 	}
 }
 

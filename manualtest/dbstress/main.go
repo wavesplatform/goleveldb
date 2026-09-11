@@ -468,7 +468,7 @@ func main() {
 				var (
 					b       = new(leveldb.Batch)
 					k2, v2  []byte
-					nReader int32
+					nReader atomic.Int32
 				)
 				for atomic.LoadUint32(&done) == 0 {
 					log.Printf("[%02d] WRITER #%d", ns, wi)
@@ -495,7 +495,7 @@ func main() {
 					writeAckAck <- struct{}{}
 
 					wg.Add(1)
-					atomic.AddInt32(&nReader, 1)
+					nReader.Add(1)
 					go func(snapwi uint32, snap *leveldb.Snapshot) {
 						var (
 							ri       int
@@ -508,8 +508,8 @@ func main() {
 							gIterStat.add(iterStat)
 							mu.Unlock()
 
-							atomic.AddInt32(&nReader, -1)
-							log.Printf("[%02d] READER #%d.%d DONE Snap=%v Alive=%d IterLatency=%v GetLatency=%v", ns, snapwi, ri, snap, atomic.LoadInt32(&nReader), iterStat.avg(), getStat.avg())
+							nReader.Add(-1)
+							log.Printf("[%02d] READER #%d.%d DONE Snap=%v Alive=%d IterLatency=%v GetLatency=%v", ns, snapwi, ri, snap, nReader.Load(), iterStat.avg(), getStat.avg())
 							snap.Release()
 							wg.Done()
 						}()

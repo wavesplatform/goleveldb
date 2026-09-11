@@ -147,7 +147,7 @@ func TestCacheMap(t *testing.T) {
 	c := NewCache(nil)
 
 	wg := new(sync.WaitGroup)
-	var done int32
+	var done atomic.Int32
 
 	for id, param := range params {
 		objects := objects[id]
@@ -184,7 +184,7 @@ func TestCacheMap(t *testing.T) {
 		go func() {
 			r := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-			for atomic.LoadInt32(&done) == 0 {
+			for done.Load() == 0 {
 				i := r.Intn(len(handles))
 				h := (*Handle)(atomic.LoadPointer(&handles[i]))
 				if h != nil && atomic.CompareAndSwapPointer(&handles[i], unsafe.Pointer(h), nil) {
@@ -199,7 +199,7 @@ func TestCacheMap(t *testing.T) {
 	growShrinkStop := make(chan bool, 1)
 	go func() {
 		handles := make([]*Handle, 100000)
-		for atomic.LoadInt32(&done) == 0 {
+		for done.Load() == 0 {
 			for i := range handles {
 				handles[i] = c.Get(999999999, uint64(i), func() (int, Value) {
 					return 1, 1
@@ -213,7 +213,7 @@ func TestCacheMap(t *testing.T) {
 	}()
 
 	wg.Wait()
-	atomic.StoreInt32(&done, 1)
+	done.Store(1)
 
 	// Releasing handles.
 	activeCount := 0

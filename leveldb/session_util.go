@@ -9,7 +9,6 @@ package leveldb
 import (
 	"fmt"
 	"maps"
-	"sync/atomic"
 	"time"
 
 	"github.com/wavesplatform/goleveldb/leveldb/journal"
@@ -37,7 +36,7 @@ func (s *session) logf(format string, v ...any) { s.stor.Log(fmt.Sprintf(format,
 // File utils.
 
 func (s *session) newTemp() storage.FileDesc {
-	num := atomic.AddInt64(&s.stTempFileNum, 1) - 1
+	num := s.stTempFileNum.Add(1) - 1
 	return storage.FileDesc{Type: storage.TypeTemp, Num: num}
 }
 
@@ -295,23 +294,23 @@ func (s *session) setVersion(r *sessionRecord, v *version) {
 
 // Get current unused file number.
 func (s *session) nextFileNum() int64 {
-	return atomic.LoadInt64(&s.stNextFileNum)
+	return s.stNextFileNum.Load()
 }
 
 // Set current unused file number to num.
 func (s *session) setNextFileNum(num int64) {
-	atomic.StoreInt64(&s.stNextFileNum, num)
+	s.stNextFileNum.Store(num)
 }
 
 // Mark file number as used.
 func (s *session) markFileNum(num int64) {
 	nextFileNum := num + 1
 	for {
-		old, x := atomic.LoadInt64(&s.stNextFileNum), nextFileNum
+		old, x := s.stNextFileNum.Load(), nextFileNum
 		if old > x {
 			x = old
 		}
-		if atomic.CompareAndSwapInt64(&s.stNextFileNum, old, x) {
+		if s.stNextFileNum.CompareAndSwap(old, x) {
 			break
 		}
 	}
@@ -319,17 +318,17 @@ func (s *session) markFileNum(num int64) {
 
 // Allocate a file number.
 func (s *session) allocFileNum() int64 {
-	return atomic.AddInt64(&s.stNextFileNum, 1) - 1
+	return s.stNextFileNum.Add(1) - 1
 }
 
 // Reuse given file number.
 func (s *session) reuseFileNum(num int64) {
 	for {
-		old, x := atomic.LoadInt64(&s.stNextFileNum), num
+		old, x := s.stNextFileNum.Load(), num
 		if old != x+1 {
 			x = old
 		}
-		if atomic.CompareAndSwapInt64(&s.stNextFileNum, old, x) {
+		if s.stNextFileNum.CompareAndSwap(old, x) {
 			break
 		}
 	}
