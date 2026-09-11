@@ -219,12 +219,12 @@ func (db *DB) clearMems() {
 
 // Set closed flag; return true if not already closed.
 func (db *DB) setClosed() bool {
-	return atomic.CompareAndSwapUint32(&db.closed, 0, 1)
+	return db.closed.CompareAndSwap(0, 1)
 }
 
 // Check whether DB was closed.
 func (db *DB) isClosed() bool {
-	return atomic.LoadUint32(&db.closed) != 0
+	return db.closed.Load() != 0
 }
 
 // Check read ok status.
