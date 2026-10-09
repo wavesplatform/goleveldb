@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/golang/snappy v1.0.0
 	github.com/klauspost/compress v1.20.1
-	github.com/minio/minlz v1.2.1
+	github.com/minio/minlz v1.2.2
 	github.com/onsi/ginkgo v1.16.5
 	github.com/onsi/gomega v1.44.0
 	github.com/stretchr/testify v1.12.1
