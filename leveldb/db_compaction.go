@@ -7,6 +7,7 @@
 package leveldb
 
 import (
+	stderrs "errors"
 	"fmt"
 	"sync"
 	"time"
@@ -92,7 +93,7 @@ noerr:
 		case err = <-db.compErrSetC:
 			switch {
 			case err == nil:
-			case err == ErrReadOnly, errors.IsCorrupted(err):
+			case stderrs.Is(err, ErrReadOnly), errors.IsCorrupted(err):
 				goto hasperr
 			default:
 				goto haserr
@@ -110,7 +111,7 @@ haserr:
 			switch {
 			case err == nil:
 				goto noerr
-			case err == ErrReadOnly, errors.IsCorrupted(err):
+			case stderrs.Is(err, ErrReadOnly), errors.IsCorrupted(err):
 				goto hasperr
 			default:
 			}
@@ -125,7 +126,7 @@ hasperr:
 		case db.compErrC <- err:
 		case db.compPerErrC <- err:
 		case db.writeLockC <- struct{}{}:
-			// Hold write lock, so that write won't pass-through.
+			// Hold write lock, so that write won't pass through.
 			db.compWriteLocking = true
 		case <-db.closeC:
 			if db.compWriteLocking {
@@ -285,8 +286,9 @@ func (db *DB) memCompaction() {
 	// Pause table compaction.
 	resumeC := make(chan struct{})
 	select {
-	case db.tcompPauseC <- (chan<- struct{})(resumeC):
-	case <-db.compPerErrC:
+	case db.tcompPauseC <- resumeC:
+	case err := <-db.compPerErrC:
+		db.logf("memdb@flush exiting (persistent error %q)", err)
 		close(resumeC)
 		resumeC = nil
 	case <-db.closeC:
@@ -506,7 +508,7 @@ func (b *tableCompactionBuilder) run(cnt *compactionTransactCounter) (err error)
 				// (3) data in layers that are being compacted here and have
 				//     smaller seq numbers will be dropped in the next
 				//     few iterations of this loop (by rule (A) above).
-				// Therefore this deletion marker is obsolete and can be dropped.
+				// Therefore, this deletion marker is obsolete and can be dropped.
 				lastSeq = seq
 				b.dropCnt++
 				continue
@@ -682,7 +684,7 @@ type cCmd interface {
 }
 
 type cAuto struct {
-	// Note for table compaction, an non-empty ackC represents it's a compaction waiting command.
+	// Note for table compaction, a non-empty ackC represents it's a compaction waiting command.
 	ackC chan<- error
 }
 
