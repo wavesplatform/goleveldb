@@ -2,6 +2,7 @@ package leveldb
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math/rand"
 	"reflect"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/onsi/gomega"
+	"github.com/wavesplatform/goleveldb/leveldb/opt"
 	"github.com/wavesplatform/goleveldb/leveldb/storage"
 	"github.com/wavesplatform/goleveldb/leveldb/testutil"
 )
@@ -424,5 +426,51 @@ func benchmarkVersionStaging(b *testing.B, trivial bool, size int) {
 		vs := v.newStaging()
 		vs.commit(rec)
 		vs.finish(trivial)
+	}
+}
+
+// TestVersionGetAllocs locks in the allocation counts of version.get for a
+// key in a table: the cache handles of the table, the index block and the
+// data block, and one copy of the found key and value.
+func TestVersionGetAllocs(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not stable under the race detector")
+	}
+	h := newDbHarnessWopt(t, &opt.Options{
+		DisableLargeBatchTransaction: true,
+		DisableSeeksCompaction:       true,
+	})
+	defer h.close()
+
+	const n = 100
+	ikeys := make([]internalKey, n)
+	for i := range n {
+		key := fmt.Sprintf("key%05d", i)
+		h.put(key, "value"+key)
+		ikeys[i] = makeInternalKey(nil, []byte(key), keyMaxSeq, keyTypeSeek)
+	}
+	h.compactMem()
+
+	v := h.db.s.version()
+	defer v.release()
+	for _, noValue := range []bool{false, true} {
+		i := 0
+		get := func() {
+			i++
+			value, _, err := v.get(nil, ikeys[i%n], nil, noValue)
+			if err != nil {
+				t.Fatal("get: ", err)
+			}
+			if !noValue && len(value) == 0 {
+				t.Fatal("get: empty value")
+			}
+		}
+		// Fill the caches.
+		for range n {
+			get()
+		}
+		if got := testing.AllocsPerRun(1000, get); got > 4 {
+			t.Errorf("get (noValue=%v): got %v allocs/op, want <= 4", noValue, got)
+		}
 	}
 }

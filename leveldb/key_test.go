@@ -131,3 +131,38 @@ func TestInternalKeyShortestSuccessor(t *testing.T) {
 	assertBytes(t, ikey("\xff\xff", 100, keyTypeVal),
 		shortSuccessor(ikey("\xff\xff", 100, keyTypeVal)))
 }
+
+// TestInternalKeyAssert checks that the accessors still panic on invalid
+// internal keys with the same messages, now that the check is inlined.
+func TestInternalKeyAssert(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ik   internalKey
+		want string
+	}{
+		{"nil", nil, "leveldb: nil internalKey"},
+		{"empty", internalKey{}, `leveldb: internal key "", len=0: invalid length`},
+		{"short", internalKey("abc"), `leveldb: internal key "abc", len=3: invalid length`},
+	} {
+		for _, fn := range []struct {
+			name string
+			f    func()
+		}{
+			{"ukey", func() { tc.ik.ukey() }},
+			{"num", func() { tc.ik.num() }},
+		} {
+			t.Run(tc.name+"/"+fn.name, func(t *testing.T) {
+				defer func() {
+					if r := recover(); r != tc.want {
+						t.Errorf("got panic %v, want %q", r, tc.want)
+					}
+				}()
+				fn.f()
+			})
+		}
+	}
+	ik := makeInternalKey(nil, []byte("k"), 1, keyTypeVal)
+	if string(ik.ukey()) != "k" || ik.num() != 1<<8|uint64(keyTypeVal) {
+		t.Errorf("valid key: got ukey %q num %d", ik.ukey(), ik.num())
+	}
+}

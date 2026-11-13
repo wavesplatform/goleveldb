@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/wavesplatform/goleveldb/leveldb/errors"
 	"github.com/wavesplatform/goleveldb/leveldb/memdb"
@@ -84,9 +85,19 @@ func (b *Batch) grow(n int) {
 		if len(b.index) > limit {
 			div = len(b.index) / limit
 		}
-		ndata := make([]byte, o, o+n+o/div)
+		ncap := o + n + o/div
+		ndata := make([]byte, o, ncap)
 		copy(ndata, b.data)
 		b.data = ndata
+
+		// While the data grows geometrically, grow the index in proportion,
+		// using the average record size so far, so that it isn't reallocated
+		// separately by append.
+		if div == 1 && o > 0 {
+			if want := len(b.index) * ncap / o; want > cap(b.index) {
+				b.index = slices.Grow(b.index, want-len(b.index))
+			}
+		}
 	}
 }
 
@@ -217,15 +228,17 @@ func (b *Batch) decode(data []byte, expectedLen int) error {
 	return nil
 }
 
-func (b *Batch) putMem(seq uint64, mdb *memdb.DB) error {
-	var ik []byte
+// putMem puts the batch records into mdb. The ik is a scratch buffer for
+// the internal keys, it is returned (possibly grown) for reuse; mdb.Put
+// copies the key so ik may be reused once putMem returns.
+func (b *Batch) putMem(seq uint64, mdb *memdb.DB, ik []byte) ([]byte, error) {
 	for i, index := range b.index {
 		ik = makeInternalKey(ik, index.k(b.data), seq+uint64(i), index.keyType)
 		if err := mdb.Put(ik, index.v(b.data)); err != nil {
-			return err
+			return ik, err
 		}
 	}
-	return nil
+	return ik, nil
 }
 
 func newBatch() any {
@@ -371,8 +384,11 @@ func batchesLen(batches []*Batch) int {
 	return batchLen
 }
 
-func writeBatchesWithHeader(wr io.Writer, batches []*Batch, seq uint64) error {
-	if _, err := wr.Write(encodeBatchHeader(nil, seq, batchesLen(batches))); err != nil {
+// writeBatchesWithHeader writes the batch header followed by the batches
+// data to wr. The hdr is a scratch buffer for the header, it is used when
+// it has enough capacity.
+func writeBatchesWithHeader(wr io.Writer, hdr []byte, batches []*Batch, seq uint64) error {
+	if _, err := wr.Write(encodeBatchHeader(hdr, seq, batchesLen(batches))); err != nil {
 		return err
 	}
 	for _, batch := range batches {

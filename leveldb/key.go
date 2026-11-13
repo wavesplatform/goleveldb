@@ -103,13 +103,20 @@ func validInternalKey(ik []byte) bool {
 	return err == nil
 }
 
+// assert panics if ik is not a valid internal key. The check is kept small
+// so that it is inlined into the hot accessors; the panic is in assertFailed.
 func (ik internalKey) assert() {
+	if len(ik) < 8 {
+		ik.assertFailed()
+	}
+}
+
+//go:noinline
+func (ik internalKey) assertFailed() {
 	if ik == nil {
 		panic("leveldb: nil internalKey")
 	}
-	if len(ik) < 8 {
-		panic(fmt.Sprintf("leveldb: internal key %q, len=%d: invalid length", []byte(ik), len(ik)))
-	}
+	panic(fmt.Sprintf("leveldb: internal key %q, len=%d: invalid length", []byte(ik), len(ik)))
 }
 
 func (ik internalKey) ukey() []byte {

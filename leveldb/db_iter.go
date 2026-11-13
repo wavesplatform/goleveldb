@@ -117,6 +117,7 @@ type dbIter struct {
 	dir         dir
 	key         []byte
 	value       []byte
+	seekKey     []byte // scratch buffer for the internal seek key
 	err         error
 	releaser    util.Releaser
 }
@@ -191,7 +192,9 @@ func (i *dbIter) Seek(key []byte) bool {
 		return false
 	}
 
-	ikey := makeInternalKey(nil, key, i.seq, keyTypeSeek)
+	// The iterators don't retain the seek key, so its buffer is reused.
+	ikey := makeInternalKey(i.seekKey[:0], key, i.seq, keyTypeSeek)
+	i.seekKey = ikey
 	if i.iter.Seek(ikey) {
 		i.dir = dirSOI
 		return i.next()
@@ -342,6 +345,7 @@ func (i *dbIter) Release() {
 		i.dir = dirReleased
 		i.key = nil
 		i.value = nil
+		i.seekKey = nil
 		i.iter.Release()
 		i.iter = nil
 		atomic.AddInt32(&i.db.aliveIters, -1)

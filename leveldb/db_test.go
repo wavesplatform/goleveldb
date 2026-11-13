@@ -8,7 +8,6 @@ package leveldb
 
 import (
 	"bytes"
-	"container/list"
 	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
@@ -16,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1202,7 +1202,7 @@ func TestDB_Snapshot(t *testing.T) {
 }
 
 func TestDB_SnapshotList(t *testing.T) {
-	db := &DB{snapsList: list.New()}
+	db := &DB{}
 	e0a := db.acquireSnapshot()
 	e0b := db.acquireSnapshot()
 	db.seq = 1
@@ -2998,4 +2998,394 @@ func TestDB_GracefulClose(t *testing.T) {
 	}
 	iter.Release()
 	closeWait.Wait()
+}
+
+// TestDB_SnapshotListReuse checks the intrusive snapshot list when elements
+// are removed from the middle and released elements are reused.
+func TestDB_SnapshotListReuse(t *testing.T) {
+	db := &DB{}
+	var es []*snapshotElement
+	for i := range 4 {
+		db.seq = uint64(i)
+		es = append(es, db.acquireSnapshot())
+	}
+	check := func(want ...uint64) {
+		t.Helper()
+		var got []uint64
+		for se := db.snapsList.front; se != nil; se = se.next {
+			if se.next != nil && se.next.prev != se {
+				t.Fatalf("broken prev link at seq %d", se.seq)
+			}
+			got = append(got, se.seq)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("snapshot list: got %v, want %v", got, want)
+		}
+		if len(want) == 0 {
+			if db.snapsList.back != nil {
+				t.Fatal("empty list has a back element")
+			}
+		} else if db.snapsList.back == nil || db.snapsList.back.seq != want[len(want)-1] {
+			t.Fatal("back element doesn't match the last element")
+		}
+	}
+	check(0, 1, 2, 3)
+	db.releaseSnapshot(es[1])
+	check(0, 2, 3)
+	db.releaseSnapshot(es[3])
+	check(0, 2)
+	db.seq = 4
+	e4 := db.acquireSnapshot()
+	if e4 != es[3] {
+		t.Error("released element was not reused")
+	}
+	check(0, 2, 4)
+	db.releaseSnapshot(es[0])
+	check(2, 4)
+	if db.minSeq() != 2 {
+		t.Fatalf("invalid sequence number, got=%d", db.minSeq())
+	}
+	db.releaseSnapshot(es[2])
+	db.releaseSnapshot(e4)
+	check()
+	if db.minSeq() != 4 {
+		t.Fatalf("invalid sequence number, got=%d", db.minSeq())
+	}
+}
+
+// TestDB_GetAllocs locks in the allocation counts of DB.Get and DB.Has.
+// A Get from the memdb only allocates the private copy of the value. A Get
+// from a table also allocates the cache handles of the table, the index
+// block and the data block, and one copy of the found key and value (Has
+// copies only the key).
+func TestDB_GetAllocs(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not stable under the race detector")
+	}
+	h := newDbHarnessWopt(t, &opt.Options{
+		DisableLargeBatchTransaction: true,
+		DisableSeeksCompaction:       true,
+	})
+	defer h.close()
+
+	const n = 100
+	key := func(i int) []byte { return fmt.Appendf(nil, "key%05d", i%n) }
+	for i := range n {
+		h.put(string(key(i)), fmt.Sprintf("value%05d", i))
+	}
+	snap, err := h.db.GetSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snap.Release()
+
+	check := func(op string, limit float64, fn func(i int) error) {
+		t.Helper()
+		i := 0
+		if got := testing.AllocsPerRun(1000, func() {
+			i++
+			if err := fn(i); err != nil {
+				t.Fatalf("%s: %v", op, err)
+			}
+		}); got > limit {
+			t.Errorf("%s: got %v allocs/op, want <= %v", op, got, limit)
+		}
+	}
+	get := func(i int) error { _, err := h.db.Get(key(i), nil); return err }
+	has := func(i int) error {
+		if ok, err := h.db.Has(key(i), nil); !ok || err != nil {
+			return fmt.Errorf("has: %v %v", ok, err)
+		}
+		return nil
+	}
+	snapGet := func(i int) error { _, err := snap.Get(key(i), nil); return err }
+	keys := make([][]byte, n)
+	for i := range keys {
+		keys[i] = key(i)
+	}
+	// Keys are built outside of the measured functions.
+	key = func(i int) []byte { return keys[i%n] }
+
+	check("Get memdb", 1, get)
+	check("Has memdb", 0, has)
+	check("Snapshot.Get memdb", 1, snapGet)
+
+	h.compactMem()
+	if h.totalTables() == 0 {
+		t.Fatal("no tables after memdb compaction")
+	}
+	// Fill the caches.
+	for i := range n {
+		if err := get(i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check("Get table", 4, get)
+	check("Has table", 4, has)
+}
+
+// TestDB_IterAllocs checks the allocations of DB iterators. Seeking and
+// iterating the memdb does not allocate; with keys in a table, entering a
+// data block allocates its cache handle.
+func TestDB_IterAllocs(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not stable under the race detector")
+	}
+	h := newDbHarnessWopt(t, &opt.Options{
+		DisableLargeBatchTransaction: true,
+		DisableSeeksCompaction:       true,
+	})
+	defer h.close()
+
+	const n = 100
+	keys := make([][]byte, n)
+	for i := range keys {
+		keys[i] = fmt.Appendf(nil, "key%05d", i)
+		h.put(string(keys[i]), fmt.Sprintf("value%05d", i))
+	}
+
+	check := func(op string, limit float64, fn func()) {
+		t.Helper()
+		if got := testing.AllocsPerRun(200, fn); got > limit {
+			t.Errorf("%s: got %v allocs/op, want <= %v", op, got, limit)
+		}
+	}
+	run := func(where string, seek, scan float64) {
+		t.Helper()
+		iter := h.db.NewIterator(nil, nil)
+		defer iter.Release()
+		i := 0
+		check(where+" Seek", seek, func() {
+			i++
+			if !iter.Seek(keys[i*7%n]) {
+				t.Fatal("seek failed")
+			}
+		})
+		check(where+" Seek+Next", seek, func() {
+			i++
+			iter.Seek(keys[i*7%n])
+			for j := 0; j < 10 && iter.Next(); j++ {
+			}
+		})
+		var got int
+		check(where+" forward", scan, func() {
+			got = 0
+			for ok := iter.First(); ok; ok = iter.Next() {
+				got++
+			}
+		})
+		if got != n {
+			t.Errorf("%s forward: got %d keys, want %d", where, got, n)
+		}
+		check(where+" reverse", scan, func() {
+			got = 0
+			for ok := iter.Last(); ok; ok = iter.Prev() {
+				got++
+			}
+		})
+		if got != n {
+			t.Errorf("%s reverse: got %d keys, want %d", where, got, n)
+		}
+		if err := iter.Error(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	run("memdb", 0, 0)
+
+	h.compactMem()
+	if h.totalTables() == 0 {
+		t.Fatal("no tables after memdb compaction")
+	}
+	// The table holds a single data block.
+	run("table", 1, 1)
+}
+
+// TestDB_GetValuePrivate checks that values returned by Get may be modified
+// by the caller, for keys in the memdb and in tables.
+func TestDB_GetValuePrivate(t *testing.T) {
+	h := newDbHarness(t)
+	defer h.close()
+
+	h.put("a", "va")
+	h.put("b", "vb")
+	h.put("empty", "")
+	check := func() {
+		t.Helper()
+		for _, kv := range [][2]string{{"a", "va"}, {"b", "vb"}} {
+			v, err := h.db.Get([]byte(kv[0]), nil)
+			if err != nil || string(v) != kv[1] {
+				t.Fatalf("Get(%q): got %q, %v, want %q", kv[0], v, err, kv[1])
+			}
+			for i := range v {
+				v[i] = 'x'
+			}
+			_ = append(v, "garbage"...)
+		}
+		if v, err := h.db.Get([]byte("empty"), nil); err != nil || len(v) != 0 {
+			t.Fatalf("Get(empty): got %q, %v", v, err)
+		}
+		h.getVal("a", "va")
+		h.getVal("b", "vb")
+	}
+	check()
+	h.compactMem()
+	check()
+}
+
+func TestDB_WriteAllocs(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not stable under the race detector")
+	}
+	h := newDbHarnessWopt(t, &opt.Options{
+		DisableLargeBatchTransaction: true,
+		WriteBuffer:                  4 << 20,
+	})
+	defer h.close()
+
+	const n = 100
+	keys := make([][]byte, n)
+	for i := range keys {
+		keys[i] = fmt.Appendf(nil, "key%05d", i)
+	}
+	value := bytes.Repeat([]byte("v"), 100)
+	batch := new(Batch)
+	for _, k := range keys[:10] {
+		batch.Put(k, value)
+	}
+	// Warm up the write path: the journal and memdb buffers, the batch pool
+	// and the scratch buffers.
+	for _, k := range keys {
+		if err := h.db.Put(k, value, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	check := func(op string, limit float64, fn func(i int) error) {
+		t.Helper()
+		i := 0
+		if got := testing.AllocsPerRun(1000, func() {
+			i++
+			if err := fn(i); err != nil {
+				t.Fatalf("%s: %v", op, err)
+			}
+		}); got > limit {
+			t.Errorf("%s: got %v allocs/op, want <= %v", op, got, limit)
+		}
+	}
+	check("Put", 0, func(i int) error { return h.db.Put(keys[i%n], value, nil) })
+	check("Delete", 0, func(i int) error { return h.db.Delete(keys[i%n], nil) })
+	check("Write", 0, func(int) error { return h.db.Write(batch, nil) })
+	noMerge := &opt.WriteOptions{NoWriteMerge: true}
+	check("Put without merge", 0, func(i int) error { return h.db.Put(keys[i%n], value, noMerge) })
+}
+
+// Table writers buffer their output: a table is written to the file in
+// chunks of tWriterBufSize instead of one write per block, all of it is
+// written by finish, and write errors are not lost.
+func TestDB_TableWriterBuffered(t *testing.T) {
+	gomega.RegisterTestingT(t)
+	stor := testutil.NewStorage()
+	stor.OnLog(testingLogger(t))
+	stor.OnClose(testingPreserveOnFailed(t))
+	defer stor.Close()
+
+	s, err := newSession(stor, &opt.Options{DisableBlockCache: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.create(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.close()
+
+	value := bytes.Repeat([]byte{'v'}, 100)
+	const n = 3000
+	fill := func(tw *tWriter) error {
+		for k := range n {
+			key := makeInternalKey(nil, fmt.Appendf(nil, "%09d", k), uint64(k+1), keyTypeVal)
+			if err := tw.append(key, value); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	stor.ResetCounter(testutil.ModeWrite, storage.TypeTable)
+	tw, err := s.tops.create(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fill(tw); err != nil {
+		t.Fatal(err)
+	}
+	blocks := tw.tw.BlocksLen()
+	tf, err := tw.finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writes, written := stor.Counter(testutil.ModeWrite, storage.TypeTable)
+	if written != tf.size {
+		t.Fatalf("wrote %d bytes, table size %d", written, tf.size)
+	}
+	if maxWrites := int(tf.size/tWriterBufSize) + 1; writes > maxWrites || writes >= blocks {
+		t.Errorf("got %d writes for %d blocks and %d bytes, want <= %d", writes, blocks, tf.size, maxWrites)
+	}
+	for _, k := range []int{0, n / 2, n - 1} {
+		ukey := fmt.Appendf(nil, "%09d", k)
+		_, v, err := s.tops.find(tf, makeInternalKey(nil, ukey, keyMaxSeq, keyTypeSeek), nil)
+		if err != nil {
+			t.Fatalf("find %s: %v", ukey, err)
+		}
+		if !bytes.Equal(v, value) {
+			t.Fatalf("find %s: got value %q", ukey, v)
+		}
+	}
+
+	// A write error is returned by append once the buffer is flushed, or by
+	// finish at the latest.
+	wantErr := errors.New("table write error")
+	stor.EmulateError(testutil.ModeWrite, storage.TypeTable, wantErr)
+	tw, err = s.tops.create(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = fill(tw)
+	if err == nil {
+		_, err = tw.finish()
+	}
+	if err == nil || !strings.Contains(err.Error(), wantErr.Error()) {
+		t.Fatalf("got error %v, want %v", err, wantErr)
+	}
+	if err := tw.drop(); err != nil {
+		t.Fatal("drop: ", err)
+	}
+	stor.EmulateError(testutil.ModeWrite, storage.TypeTable, nil)
+
+	// A dropped writer discards its buffered output and removes the file.
+	stor.ResetCounter(testutil.ModeWrite, storage.TypeTable)
+	tw, err = s.tops.create(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fd := tw.fd
+	if err := tw.append(makeInternalKey(nil, []byte("k"), 1, keyTypeVal), value); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.drop(); err != nil {
+		t.Fatal("drop: ", err)
+	}
+	if tw.bw != nil {
+		t.Fatal("buffer not released by drop")
+	}
+	if writes, written := stor.Counter(testutil.ModeWrite, storage.TypeTable); writes != 0 || written != 0 {
+		t.Fatalf("dropped writer wrote %d times, %d bytes", writes, written)
+	}
+	fds, err := stor.List(storage.TypeTable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(fds, fd) {
+		t.Fatalf("dropped table %v not removed", fd)
+	}
 }

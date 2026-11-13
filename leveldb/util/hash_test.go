@@ -7,6 +7,9 @@
 package util
 
 import (
+	"encoding/binary"
+	"fmt"
+	"math/rand"
 	"testing"
 )
 
@@ -42,5 +45,62 @@ func TestHash(t *testing.T) {
 		if h != x.hash {
 			t.Fatalf("test-%d: invalid hash, %#x vs %#x", i, h, x.hash)
 		}
+	}
+}
+
+// refHash is the original index-based implementation of Hash.
+func refHash(data []byte, seed uint32) uint32 {
+	const (
+		m = uint32(0xc6a4a793)
+		r = uint32(24)
+	)
+	var (
+		h = seed ^ (uint32(len(data)) * m)
+		i int
+	)
+	for n := len(data) - len(data)%4; i < n; i += 4 {
+		h += binary.LittleEndian.Uint32(data[i:])
+		h *= m
+		h ^= (h >> 16)
+	}
+	switch len(data) - i {
+	case 3:
+		h += uint32(data[i+2]) << 16
+		fallthrough
+	case 2:
+		h += uint32(data[i+1]) << 8
+		fallthrough
+	case 1:
+		h += uint32(data[i])
+		h *= m
+		h ^= (h >> r)
+	}
+	return h
+}
+
+func TestHashMatchesReference(t *testing.T) {
+	rnd := rand.New(rand.NewSource(1))
+	data := make([]byte, 100)
+	for i := range 10000 {
+		b := data[:i%len(data)]
+		rnd.Read(b)
+		seed := rnd.Uint32()
+		if got, want := Hash(b, seed), refHash(b, seed); got != want {
+			t.Fatalf("len=%d seed=%#x: hash %#x, want %#x", len(b), seed, got, want)
+		}
+	}
+}
+
+var hashSink uint32
+
+func BenchmarkHash(b *testing.B) {
+	for _, n := range []int{7, 16, 25, 100} {
+		data := make([]byte, n)
+		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			b.SetBytes(int64(n))
+			for range b.N {
+				hashSink += Hash(data, 0xbc9f1d34)
+			}
+		})
 	}
 }

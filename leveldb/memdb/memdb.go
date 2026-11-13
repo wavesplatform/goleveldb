@@ -9,6 +9,7 @@ package memdb
 
 import (
 	"math/rand"
+	"slices"
 	"sync"
 
 	"github.com/wavesplatform/goleveldb/leveldb/comparer"
@@ -302,6 +303,9 @@ func (p *DB) Put(key []byte, value []byte) error {
 	p.kvData = append(p.kvData, value...)
 	// Node
 	node := len(p.nodeData)
+	if cap(p.nodeData)-node < nNext+h {
+		p.growNodes(nNext + h)
+	}
 	p.nodeData = append(p.nodeData, kvOffset, len(key), len(value), h)
 	for i, n := range p.prevNode[:h] {
 		m := n + nNext + i
@@ -312,6 +316,22 @@ func (p *DB) Put(key []byte, value []byte) error {
 	p.kvSize += len(key) + len(value)
 	p.n++
 	return nil
+}
+
+// growNodes makes room for n more node data entries. Once the KV buffer is
+// filled to a fair share of its capacity, the node data needed for the whole
+// KV buffer is estimated from the nodes and KV data so far, and the node data
+// grows to the estimate at once instead of doubling repeatedly. Before that
+// it grows like append, so that a mostly empty DB stays small.
+func (p *DB) growNodes(n int) {
+	l := len(p.nodeData)
+	want := l + n
+	if kv := len(p.kvData); kv > 0 && kv >= cap(p.kvData)/8 {
+		if est := l * cap(p.kvData) / kv; est > 2*cap(p.nodeData) {
+			want = est
+		}
+	}
+	p.nodeData = slices.Grow(p.nodeData, want-l)
 }
 
 // Delete deletes the value for the given key. It returns ErrNotFound if
@@ -441,7 +461,9 @@ func (p *DB) Len() int {
 // Reset resets the DB to initial empty state. Allows reuse the buffer.
 func (p *DB) Reset() {
 	p.mu.Lock()
-	p.rnd = rand.New(rand.NewSource(0xdeadbeef))
+	// Reseeding in place gives the same heights as a new source, without
+	// allocating one.
+	p.rnd.Seed(0xdeadbeef)
 	p.maxHeight = 1
 	p.n = 0
 	p.kvSize = 0

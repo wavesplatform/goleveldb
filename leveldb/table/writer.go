@@ -13,6 +13,7 @@ import (
 	"io"
 	"math"
 	"slices"
+	"sync"
 
 	"github.com/golang/snappy"
 	"github.com/klauspost/compress/zstd"
@@ -51,19 +52,16 @@ func (w *blockWriter) append(key, value []byte) (err error) {
 	} else {
 		nShared = sharedPrefixLen(w.prevKey, key)
 	}
+	unshared := key[nShared:]
 	n := binary.PutUvarint(w.scratch[0:], uint64(nShared))
-	n += binary.PutUvarint(w.scratch[n:], uint64(len(key)-nShared))
+	n += binary.PutUvarint(w.scratch[n:], uint64(len(unshared)))
 	n += binary.PutUvarint(w.scratch[n:], uint64(len(value)))
-	if _, err = w.buf.Write(w.scratch[:n]); err != nil {
-		return err
-	}
-	if _, err = w.buf.Write(key[nShared:]); err != nil {
-		return err
-	}
-	if _, err = w.buf.Write(value); err != nil {
-		return err
-	}
-	w.prevKey = append(w.prevKey[:0], key...)
+	// Grow the buffer once for the whole entry.
+	b := w.buf.Alloc(n + len(unshared) + len(value))
+	copy(b[copy(b, w.scratch[:n]):], unshared)
+	copy(b[n+len(unshared):], value)
+	// The shared prefix is already in prevKey.
+	w.prevKey = append(w.prevKey[:nShared], unshared...)
 	w.nEntries++
 	return nil
 }
@@ -148,6 +146,41 @@ func (w *filterWriter) generate() {
 	}
 }
 
+// writerBufs holds the buffers of a Writer that grow with the table. They are
+// recycled through writerBufsPool when the Writer is closed, so that building
+// many tables, as compaction does, does not grow them again for each table.
+type writerBufs struct {
+	index, filter         []byte
+	dataPrevKey, indexKey []byte
+	compression           []byte
+	dataRestarts          []uint32
+	indexRestarts         []uint32
+	filterOffsets         []uint32
+}
+
+// maxPooledWriterBuf is the largest buffer kept in writerBufsPool, larger
+// ones are left to the GC.
+const maxPooledWriterBuf = 1 << 20
+
+var writerBufsPool = sync.Pool{
+	New: func() any { return new(writerBufs) },
+}
+
+// reusable returns s emptied for reuse, or nil if its capacity exceeds
+// maxCap elements.
+func reusable[T any](s []T, maxCap int) []T {
+	if cap(s) > maxCap {
+		return nil
+	}
+	return s[:0]
+}
+
+func pooledBytes(b []byte) []byte { return reusable(b, maxPooledWriterBuf) }
+
+func pooledUint32s(b []uint32) []uint32 { return reusable(b, maxPooledWriterBuf/4) }
+
+var errWriterClosed = errors.New("leveldb/table: writer is closed")
+
 // Writer is a table writer.
 type Writer struct {
 	writer io.Writer
@@ -171,6 +204,40 @@ type Writer struct {
 	scratch            [50]byte
 	comparerScratch    []byte
 	compressionScratch []byte
+	// bufs is returned to writerBufsPool by release, nil afterwards.
+	bufs *writerBufs
+}
+
+// release returns the data block buffer to the buffer pool and the other
+// growing buffers to writerBufsPool. It is called once, by Close.
+func (w *Writer) release() {
+	if w.bpool != nil {
+		// Buffer.Bytes() returns [offset:] of the buffer.
+		// We need to Reset() so that the offset = 0, resulting
+		// in buf.Bytes() returning the whole allocated bytes.
+		w.dataBlock.buf.Reset()
+		w.bpool.Put(w.dataBlock.buf.Bytes())
+	}
+	w.dataBlock.buf = util.Buffer{}
+
+	b := w.bufs
+	w.bufs = nil
+	w.indexBlock.buf.Reset()
+	b.index = pooledBytes(w.indexBlock.buf.Bytes())
+	w.indexBlock.buf = util.Buffer{}
+	w.filterBlock.buf.Reset()
+	// Filter generators may expect memory from Alloc to be zeroed, as it is
+	// in a new buffer, the bloom filter sets bits in it.
+	b.filter = pooledBytes(w.filterBlock.buf.Bytes())
+	clear(b.filter[:cap(b.filter)])
+	w.filterBlock.buf = util.Buffer{}
+	b.dataPrevKey, w.dataBlock.prevKey = pooledBytes(w.dataBlock.prevKey), nil
+	b.indexKey, w.indexBlock.prevKey = pooledBytes(w.indexBlock.prevKey), nil
+	b.compression, w.compressionScratch = pooledBytes(w.compressionScratch), nil
+	b.dataRestarts, w.dataBlock.restarts = pooledUint32s(w.dataBlock.restarts), nil
+	b.indexRestarts, w.indexBlock.restarts = pooledUint32s(w.indexBlock.restarts), nil
+	b.filterOffsets, w.filterBlock.offsets = pooledUint32s(w.filterBlock.offsets), nil
+	writerBufsPool.Put(b)
 }
 
 func (w *Writer) writeBlock(buf *util.Buffer, compression opt.Compression) (bh blockHandle, err error) {
@@ -179,9 +246,12 @@ func (w *Writer) writeBlock(buf *util.Buffer, compression opt.Compression) (bh b
 	switch compression {
 	case opt.SnappyCompression:
 		// Allocate scratch enough for compression and block trailer.
-		if n := snappy.MaxEncodedLen(buf.Len()) + blockTrailerLen; len(w.compressionScratch) < n {
+		// snappy.Encode uses len(dst), the scratch may come from the pool
+		// with zero length.
+		if n := snappy.MaxEncodedLen(buf.Len()) + blockTrailerLen; cap(w.compressionScratch) < n {
 			w.compressionScratch = make([]byte, n)
 		}
+		w.compressionScratch = w.compressionScratch[:cap(w.compressionScratch)]
 		compressed := snappy.Encode(w.compressionScratch, buf.Bytes())
 		n := len(compressed)
 		b = compressed[:n+blockTrailerLen]
@@ -363,19 +433,13 @@ func (w *Writer) BytesLen() int {
 // after Close, but calling BlocksLen, EntriesLen and BytesLen
 // is still possible.
 func (w *Writer) Close() error {
-	defer func() {
-		if w.bpool != nil {
-			// Buffer.Bytes() returns [offset:] of the buffer.
-			// We need to Reset() so that the offset = 0, resulting
-			// in buf.Bytes() returning the whole allocated bytes.
-			w.dataBlock.buf.Reset()
-			w.bpool.Put(w.dataBlock.buf.Bytes())
-		}
-	}()
-
 	if w.err != nil {
+		if w.bufs != nil {
+			w.release()
+		}
 		return w.err
 	}
+	defer w.release()
 
 	// Write the last data block. Or empty data block if there
 	// aren't any data blocks at all.
@@ -442,7 +506,7 @@ func (w *Writer) Close() error {
 	}
 	w.offset += footerLen
 
-	w.err = errors.New("leveldb/table: writer is closed")
+	w.err = errWriterClosed
 	return nil
 }
 
@@ -458,24 +522,34 @@ func NewWriter(f io.Writer, o *opt.Options, pool *util.BufferPool, size int) *Wr
 	}
 	bufBytes = bufBytes[:0]
 
+	b := writerBufsPool.Get().(*writerBufs)
 	w := &Writer{
-		writer:          f,
-		cmp:             o.GetComparer(),
-		filter:          o.GetFilter(),
-		compression:     o.GetCompression(),
-		blockSize:       o.GetBlockSize(),
-		comparerScratch: make([]byte, 0),
-		bpool:           pool,
-		dataBlock:       blockWriter{buf: *util.NewBuffer(bufBytes)},
+		writer:             f,
+		cmp:                o.GetComparer(),
+		filter:             o.GetFilter(),
+		compression:        o.GetCompression(),
+		blockSize:          o.GetBlockSize(),
+		comparerScratch:    make([]byte, 0),
+		compressionScratch: b.compression,
+		bpool:              pool,
+		bufs:               b,
+		dataBlock:          blockWriter{buf: *util.NewBuffer(bufBytes)},
 	}
 	// data block
 	w.dataBlock.restartInterval = o.GetBlockRestartInterval()
 	// The first 20-bytes are used for encoding block handle.
 	w.dataBlock.scratch = w.scratch[20:]
+	w.dataBlock.prevKey = b.dataPrevKey
+	w.dataBlock.restarts = b.dataRestarts
 	// index block
 	w.indexBlock.restartInterval = 1
 	w.indexBlock.scratch = w.scratch[20:]
+	w.indexBlock.buf = *util.NewBuffer(b.index)
+	w.indexBlock.prevKey = b.indexKey
+	w.indexBlock.restarts = b.indexRestarts
 	// filter block
+	w.filterBlock.buf = *util.NewBuffer(b.filter)
+	w.filterBlock.offsets = b.filterOffsets
 	if w.filter != nil {
 		w.filterBlock.generator = w.filter.NewGenerator()
 		w.filterBlock.baseLg = uint(o.GetFilterBaseLg())

@@ -7,11 +7,30 @@
 package filter
 
 import (
+	"math/bits"
+
 	"github.com/wavesplatform/goleveldb/leveldb/util"
 )
 
 func bloomHash(key []byte) uint32 {
 	return util.Hash(key, 0xbc9f1d34)
+}
+
+// modulus computes x % d without a division per call, see Lemire et al.,
+// "Faster Remainder by Direct Computation" (2019). It is exact for all
+// 32-bit x and d > 0.
+type modulus struct {
+	m uint64
+	d uint64
+}
+
+func newModulus(d uint32) modulus {
+	return modulus{m: ^uint64(0)/uint64(d) + 1, d: uint64(d)}
+}
+
+func (r modulus) mod(x uint32) uint32 {
+	hi, _ := bits.Mul64(r.m*uint64(x), r.d)
+	return uint32(hi)
 }
 
 type bloomFilter int
@@ -41,8 +60,9 @@ func (f bloomFilter) Contains(filter, key []byte) bool {
 
 	kh := bloomHash(key)
 	delta := (kh >> 17) | (kh << 15) // Rotate right 17 bits
+	m := newModulus(nBits)
 	for range k {
-		bitpos := kh % nBits
+		bitpos := m.mod(kh)
 		if (uint32(filter[bitpos/8]) & (1 << (bitpos % 8))) == 0 {
 			return false
 		}
@@ -62,6 +82,9 @@ func (f bloomFilter) NewGenerator() FilterGenerator {
 	return &bloomFilterGenerator{
 		n: int(f),
 		k: k,
+		// Enough for a typical filter (2KB of data by default), so that it
+		// does not grow from a single entry in each new generator.
+		keyHashes: make([]uint32, 0, 64),
 	}
 }
 
@@ -89,10 +112,11 @@ func (g *bloomFilterGenerator) Generate(b Buffer) {
 
 	dest := b.Alloc(int(nBytes) + 1)
 	dest[nBytes] = g.k
+	m := newModulus(nBits)
 	for _, kh := range g.keyHashes {
 		delta := (kh >> 17) | (kh << 15) // Rotate right 17 bits
 		for j := uint8(0); j < g.k; j++ {
-			bitpos := kh % nBits
+			bitpos := m.mod(kh)
 			dest[bitpos/8] |= (1 << (bitpos % 8))
 			kh += delta
 		}

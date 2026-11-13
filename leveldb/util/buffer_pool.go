@@ -16,6 +16,9 @@ import (
 type BufferPool struct {
 	pool     [6]sync.Pool
 	baseline [5]int
+	// boxes holds empty *[]byte boxes taken out of pool by Get, for reuse
+	// by Put.
+	boxes sync.Pool
 
 	get     uint32
 	put     uint32
@@ -43,43 +46,38 @@ func (p *BufferPool) Get(n int) []byte {
 
 	poolNum := p.poolNum(n)
 
-	b := p.pool[poolNum].Get().(*[]byte)
+	box := p.pool[poolNum].Get().(*[]byte)
+	b := *box
+	// Recycle the box, so that Put doesn't allocate a new one.
+	*box = nil
+	p.boxes.Put(box)
 
-	if cap(*b) == 0 {
+	if cap(b) == 0 {
 		// If we grabbed nothing, increment the miss stats.
 		atomic.AddUint32(&p.miss, 1)
 
 		if poolNum == len(p.baseline) {
-			*b = make([]byte, n)
-			return *b
+			return make([]byte, n)
 		}
-
-		*b = make([]byte, p.baseline[poolNum])
-		*b = (*b)[:n]
-		return *b
+		return make([]byte, p.baseline[poolNum])[:n]
 	} else {
 		// If there is enough capacity in the bytes grabbed, resize the length
 		// to n and return.
-		if n < cap(*b) {
+		if n < cap(b) {
 			atomic.AddUint32(&p.less, 1)
-			*b = (*b)[:n]
-			return *b
-		} else if n == cap(*b) {
+			return b[:n]
+		} else if n == cap(b) {
 			atomic.AddUint32(&p.equal, 1)
-			*b = (*b)[:n]
-			return *b
-		} else if n > cap(*b) {
+			return b[:n]
+		} else if n > cap(b) {
 			atomic.AddUint32(&p.greater, 1)
 		}
 	}
 
 	if poolNum == len(p.baseline) {
-		*b = make([]byte, n)
-		return *b
+		return make([]byte, n)
 	}
-	*b = make([]byte, p.baseline[poolNum])
-	*b = (*b)[:n]
-	return *b
+	return make([]byte, p.baseline[poolNum])[:n]
 }
 
 // Put adds given buffer to the pool.
@@ -91,7 +89,12 @@ func (p *BufferPool) Put(b []byte) {
 	poolNum := p.poolNum(cap(b))
 
 	atomic.AddUint32(&p.put, 1)
-	p.pool[poolNum].Put(&b)
+	box, _ := p.boxes.Get().(*[]byte)
+	if box == nil {
+		box = new([]byte)
+	}
+	*box = b
+	p.pool[poolNum].Put(box)
 }
 
 func (p *BufferPool) String() string {

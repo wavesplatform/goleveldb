@@ -80,7 +80,10 @@ func (r *lru) SetCapacity(capacity int) {
 }
 
 func (r *lru) Promote(n *Node) {
-	var evicted []*lruNode
+	// Promoting a node usually evicts only a few others, so collect them
+	// in a stack buffer.
+	var evictedBuf [8]*lruNode
+	evicted := evictedBuf[:0]
 
 	r.mu.Lock()
 	if n.CacheData == nil {

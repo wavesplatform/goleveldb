@@ -19,7 +19,7 @@ func (db *DB) writeJournal(batches []*Batch, seq uint64, sync bool) error {
 	if err != nil {
 		return err
 	}
-	if err := writeBatchesWithHeader(wr, batches, seq); err != nil {
+	if err := writeBatchesWithHeader(wr, db.writeHeader[:], batches, seq); err != nil {
 		return err
 	}
 	if err := db.journal.Flush(); err != nil {
@@ -234,7 +234,8 @@ func (db *DB) writeLocked(batch, ourBatch *Batch, merge, sync bool) error {
 
 	// Put batches.
 	for _, batch := range batches {
-		if err := batch.putMem(seq, mdb.DB); err != nil {
+		db.writeIKey, err = batch.putMem(seq, mdb.DB, db.writeIKey)
+		if err != nil {
 			panic(err)
 		}
 		seq += uint64(batch.Len())

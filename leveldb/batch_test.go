@@ -13,6 +13,8 @@ import (
 	"testing"
 	"testing/quick"
 
+	"github.com/wavesplatform/goleveldb/leveldb/comparer"
+	"github.com/wavesplatform/goleveldb/leveldb/memdb"
 	"github.com/wavesplatform/goleveldb/leveldb/testutil"
 )
 
@@ -175,4 +177,118 @@ func benchmarkBatchWrite(b *testing.B, config *BatchConfig) {
 		}
 	}
 	b.ReportAllocs()
+}
+
+// BenchmarkBatchPutSmall builds a new small batch per iteration, like a
+// caller grouping a few related writes.
+func BenchmarkBatchPutSmall(b *testing.B) {
+	for _, n := range []int{1, 10, 100} {
+		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			r := rand.New(rand.NewSource(1337))
+			keys := make([][]byte, n)
+			vals := make([][]byte, n)
+			for i := range keys {
+				keys[i] = randomString(r, 16)
+				vals[i] = randomString(r, 100)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				batch := new(Batch)
+				for i := range keys {
+					batch.Put(keys[i], vals[i])
+				}
+			}
+		})
+	}
+}
+
+// TestBatchGrow checks the batch records while the data and index buffers
+// grow, with the default and small grow limits.
+func TestBatchGrow(t *testing.T) {
+	type rec struct {
+		kt   keyType
+		k, v []byte
+	}
+	for _, limit := range []int{0, 1, 7, 100} {
+		r := rand.New(rand.NewSource(int64(limit)))
+		b := MakeBatchWithConfig(&BatchConfig{GrowLimit: limit})
+		var recs []rec
+		for i := range 5000 {
+			// Mix record sizes so that the index estimate is sometimes off.
+			k := randomString(r, 1+r.Intn(40))
+			if i%3 == 0 {
+				b.Delete(k)
+				recs = append(recs, rec{keyTypeDel, k, nil})
+				continue
+			}
+			v := randomString(r, r.Intn(300))
+			b.Put(k, v)
+			recs = append(recs, rec{keyTypeVal, k, v})
+		}
+		check := func(name string, b *Batch) {
+			t.Helper()
+			if b.Len() != len(recs) {
+				t.Fatalf("limit %d %s: got %d records, want %d", limit, name, b.Len(), len(recs))
+			}
+			internalLen := 0
+			err := b.replayInternal(func(i int, kt keyType, k, v []byte) error {
+				want := recs[i]
+				if kt != want.kt || !bytes.Equal(k, want.k) || !bytes.Equal(v, want.v) {
+					return fmt.Errorf("record %d: got %v %q %q, want %v %q %q", i, kt, k, v, want.kt, want.k, want.v)
+				}
+				internalLen += len(k) + len(v) + 8
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("limit %d %s: %v", limit, name, err)
+			}
+			if b.internalLen != internalLen {
+				t.Fatalf("limit %d %s: got internalLen %d, want %d", limit, name, b.internalLen, internalLen)
+			}
+		}
+		check("built", b)
+		loaded := new(Batch)
+		if err := loaded.Load(b.Dump()); err != nil {
+			t.Fatal(err)
+		}
+		check("loaded", loaded)
+	}
+}
+
+func TestBatchAllocs(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not stable under the race detector")
+	}
+	key := []byte("key-0123456789")
+	value := bytes.Repeat([]byte("v"), 100)
+	b := new(Batch)
+	for range 100 {
+		b.Put(key, value)
+	}
+	// A reset batch reuses its buffers.
+	if got := testing.AllocsPerRun(100, func() {
+		b.Reset()
+		for range 50 {
+			b.Put(key, value)
+			b.Delete(key)
+		}
+	}); got != 0 {
+		t.Errorf("Put/Delete on a reset batch: got %v allocs/op, want 0", got)
+	}
+
+	mdb := memdb.New(comparer.DefaultComparer, 1<<20)
+	ik, err := b.putMem(1, mdb, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq := uint64(1)
+	if got := testing.AllocsPerRun(100, func() {
+		mdb.Reset()
+		seq += uint64(b.Len())
+		if ik, err = b.putMem(seq, mdb, ik); err != nil {
+			t.Fatal(err)
+		}
+	}); got != 0 {
+		t.Errorf("putMem with a scratch key: got %v allocs/op, want 0", got)
+	}
 }

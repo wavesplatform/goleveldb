@@ -8,9 +8,14 @@ package filter
 
 import (
 	"encoding/binary"
-	"github.com/wavesplatform/goleveldb/leveldb/util"
+	"fmt"
+	"math/rand"
 	"testing"
+
+	"github.com/wavesplatform/goleveldb/leveldb/util"
 )
+
+const bloomGoldenCRC = 0xb7e31d8f
 
 type harness struct {
 	t *testing.T
@@ -138,5 +143,73 @@ func TestBloomFilter_VaryingLengths(t *testing.T) {
 	t.Logf("false positive rate: %d good, %d mediocre", good, mediocre)
 	if mediocre > good/5 {
 		t.Error("mediocre false positive rate is more than expected")
+	}
+}
+
+// bloomGolden is a filter built from the keys 0..999 with 10 bits per key,
+// checksummed so that changes to hashing or generation are caught.
+func TestBloomFilter_Golden(t *testing.T) {
+	h := newHarness(t)
+	for i := range 1000 {
+		h.addNum(uint32(i))
+	}
+	h.build()
+	if got, want := util.NewCRC(h.filter).Value(), uint32(bloomGoldenCRC); got != want {
+		t.Fatalf("filter crc %#x, want %#x", got, want)
+	}
+}
+
+func benchBloomKeys(n int) [][]byte {
+	keys := make([][]byte, n)
+	for i := range keys {
+		keys[i] = fmt.Appendf(nil, "%016d", i)
+	}
+	return keys
+}
+
+func BenchmarkBloomGenerate(b *testing.B) {
+	keys := benchBloomKeys(100)
+	g := NewBloomFilter(10).NewGenerator()
+	buf := &util.Buffer{}
+	b.ReportAllocs()
+	for range b.N {
+		buf.Reset()
+		for _, key := range keys {
+			g.Add(key)
+		}
+		g.Generate(buf)
+	}
+}
+
+func BenchmarkBloomContains(b *testing.B) {
+	keys := benchBloomKeys(1000)
+	f := NewBloomFilter(10)
+	g := f.NewGenerator()
+	for _, key := range keys[:500] {
+		g.Add(key)
+	}
+	buf := &util.Buffer{}
+	g.Generate(buf)
+	filter := buf.Bytes()
+	b.ReportAllocs()
+	for i := range b.N {
+		f.Contains(filter, keys[i%len(keys)])
+	}
+}
+
+func TestModulus(t *testing.T) {
+	rnd := rand.New(rand.NewSource(1))
+	divisors := []uint32{1, 2, 3, 7, 8, 64, 1000, 1 << 20, 1<<31 - 1, 1 << 31, 1<<32 - 1}
+	for range 1000 {
+		divisors = append(divisors, rnd.Uint32()|1, uint32(rnd.Intn(1<<20)+1))
+	}
+	xs := []uint32{0, 1, 2, 1<<31 - 1, 1 << 31, 1<<32 - 1}
+	for _, d := range divisors {
+		m := newModulus(d)
+		for _, x := range append(xs, rnd.Uint32(), rnd.Uint32(), d-1, d, d+1) {
+			if got, want := m.mod(x), x%d; got != want {
+				t.Fatalf("%d %% %d: got %d, want %d", x, d, got, want)
+			}
+		}
 	}
 }

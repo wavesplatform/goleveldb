@@ -853,3 +853,63 @@ func TestCorrupt_MiddleChuckLengthOverflow(t *testing.T) {
 		t.Fatalf("last next: unexpected error: %v", err)
 	}
 }
+
+func TestWriterAllocs(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts are not stable under the race detector")
+	}
+	for _, size := range []int{10, 1000, 3 * blockSize} {
+		rec := []byte(big("x", size))
+		w := NewWriter(&discardFlusher{})
+		// The journal writers are allocated in slabs, so they amortize to
+		// zero over enough runs.
+		got := testing.AllocsPerRun(1000, func() {
+			jw, err := w.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := jw.Write(rec); err != nil {
+				t.Fatal(err)
+			}
+			if err := w.Flush(); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if got != 0 {
+			t.Errorf("size %d: got %v allocs/op, want 0", size, got)
+		}
+	}
+}
+
+// TestStaleWriterSlab checks that writers from earlier slabs, and from the
+// same slab, are stale once Next has been called again.
+func TestStaleWriterSlab(t *testing.T) {
+	buf := new(bytes.Buffer)
+	w := NewWriter(buf)
+	const n = 3*writerSlabSize + 5
+	writers := make([]io.Writer, n)
+	for i := range writers {
+		jw, err := w.Next()
+		require.NoError(t, err)
+		_, err = fmt.Fprintf(jw, "rec%d", i)
+		require.NoError(t, err)
+		writers[i] = jw
+		for j, old := range writers[:i] {
+			if _, err := old.Write([]byte("x")); err == nil || !strings.Contains(err.Error(), "stale") {
+				t.Fatalf("writer %d after Next #%d: unexpected error: %v", j, i, err)
+			}
+		}
+	}
+	require.NoError(t, w.Close())
+
+	r := NewReader(buf, dropper{t}, true, true)
+	for i := range n {
+		rr, err := r.Next()
+		require.NoError(t, err)
+		got, err := io.ReadAll(rr)
+		require.NoError(t, err)
+		require.Equal(t, fmt.Sprintf("rec%d", i), string(got))
+	}
+	_, err := r.Next()
+	require.Equal(t, io.EOF, err)
+}

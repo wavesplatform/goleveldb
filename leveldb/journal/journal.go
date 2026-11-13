@@ -341,6 +341,9 @@ func (x *singleReader) ReadByte() (byte, error) {
 	return c, nil
 }
 
+// writerSlabSize is the number of journal writers allocated at once by Next.
+const writerSlabSize = 64
+
 // Writer writes journals to an underlying io.Writer.
 type Writer struct {
 	// w is the underlying writer.
@@ -363,6 +366,10 @@ type Writer struct {
 	pending bool
 	// err is any accumulated error.
 	err error
+	// writers is a slab of journal writers handed out by Next. Each slot is
+	// used once, so that a stale writer keeps its own seq, and returning a
+	// pointer avoids allocating an interface value per journal.
+	writers []singleWriter
 	// buf is the buffer.
 	buf [blockSize]byte
 }
@@ -483,9 +490,7 @@ func (w *Writer) Next() (io.Writer, error) {
 	// Check if there is room in the block for the header.
 	if w.j > blockSize {
 		// Fill in the rest of the block with zeroes.
-		for k := w.i; k < blockSize; k++ {
-			w.buf[k] = 0
-		}
+		clear(w.buf[w.i:])
 		w.writeBlock()
 		if w.err != nil {
 			return nil, w.err
@@ -493,7 +498,13 @@ func (w *Writer) Next() (io.Writer, error) {
 	}
 	w.first = true
 	w.pending = true
-	return singleWriter{w, w.seq}, nil
+	if len(w.writers) == 0 {
+		w.writers = make([]singleWriter, writerSlabSize)
+	}
+	x := &w.writers[0]
+	w.writers = w.writers[1:]
+	x.w, x.seq = w, w.seq
+	return x, nil
 }
 
 // Size returns the current size of the file.
@@ -509,7 +520,7 @@ type singleWriter struct {
 	seq int
 }
 
-func (x singleWriter) Write(p []byte) (int, error) {
+func (x *singleWriter) Write(p []byte) (int, error) {
 	w := x.w
 	if w.seq != x.seq {
 		return 0, errors.New("leveldb/journal: stale writer")

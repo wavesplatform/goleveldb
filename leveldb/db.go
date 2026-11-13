@@ -7,7 +7,6 @@
 package leveldb
 
 import (
-	"container/list"
 	stderrs "errors"
 	"fmt"
 	"io"
@@ -64,7 +63,7 @@ type DB struct {
 
 	// Snapshot.
 	snapsMu   sync.Mutex
-	snapsList *list.List
+	snapsList snapshotList
 
 	// Write.
 	batchPool    sync.Pool
@@ -75,6 +74,9 @@ type DB struct {
 	writeDelay   time.Duration
 	writeDelayN  int
 	tr           *Transaction
+	// Scratch buffers owned by the write lock holder.
+	writeHeader [batchHeaderLen]byte
+	writeIKey   []byte
 
 	// Compaction.
 	compCommitLk     sync.Mutex
@@ -104,8 +106,6 @@ func openDB(s *session) (*DB, error) {
 		seq: s.stSeqNum,
 		// MemDB
 		memPool: make(chan *memdb.DB, 1),
-		// Snapshot
-		snapsList: list.New(),
 		// Write
 		batchPool:    sync.Pool{New: newBatch},
 		writeMergeC:  make(chan writeMerge),
@@ -822,8 +822,38 @@ func memGet(mdb *memdb.DB, ikey internalKey, icmp *iComparer) (ok bool, mv []byt
 	return
 }
 
+// releaseMems releases the memdbs returned by getMems, which may be nil.
+func releaseMems(em, fm *memDB) {
+	if em != nil {
+		em.decref()
+	}
+	if fm != nil {
+		fm.decref()
+	}
+}
+
+// ikeyPool holds *[]byte scratch buffers for the internal keys of point
+// lookups. Lookups don't retain the internal key, so it can be reused.
+var ikeyPool = sync.Pool{New: func() any { return new([]byte) }}
+
+// maxPooledIKeyCap caps the capacity of pooled internal key buffers, so
+// that a lookup with a huge key doesn't pin its buffer in the pool.
+const maxPooledIKeyCap = 4096
+
+func getIKeyBuf() *[]byte { return ikeyPool.Get().(*[]byte) }
+
+func putIKeyBuf(kb *[]byte) {
+	if cap(*kb) > maxPooledIKeyCap {
+		*kb = nil
+	}
+	ikeyPool.Put(kb)
+}
+
 func (db *DB) get(auxm *memdb.DB, auxt tFiles, key []byte, seq uint64, ro *opt.ReadOptions) (value []byte, err error) {
-	ikey := makeInternalKey(nil, key, seq, keyTypeSeek)
+	kb := getIKeyBuf()
+	defer putIKeyBuf(kb)
+	ikey := makeInternalKey(*kb, key, seq, keyTypeSeek)
+	*kb = ikey
 
 	if auxm != nil {
 		if ok, mv, me := memGet(auxm, ikey, db.s.icmp); ok {
@@ -831,13 +861,13 @@ func (db *DB) get(auxm *memdb.DB, auxt tFiles, key []byte, seq uint64, ro *opt.R
 		}
 	}
 
+	// The memdbs are held until the tables are searched as well.
 	em, fm := db.getMems()
+	defer releaseMems(em, fm)
 	for _, m := range [...]*memDB{em, fm} {
 		if m == nil {
 			continue
 		}
-		defer m.decref()
-
 		if ok, mv, me := memGet(m.DB, ikey, db.s.icmp); ok {
 			return append([]byte(nil), mv...), me
 		}
@@ -861,7 +891,10 @@ func nilIfNotFound(err error) error {
 }
 
 func (db *DB) has(auxm *memdb.DB, auxt tFiles, key []byte, seq uint64, ro *opt.ReadOptions) (ret bool, err error) {
-	ikey := makeInternalKey(nil, key, seq, keyTypeSeek)
+	kb := getIKeyBuf()
+	defer putIKeyBuf(kb)
+	ikey := makeInternalKey(*kb, key, seq, keyTypeSeek)
+	*kb = ikey
 
 	if auxm != nil {
 		if ok, _, me := memGet(auxm, ikey, db.s.icmp); ok {
@@ -869,13 +902,13 @@ func (db *DB) has(auxm *memdb.DB, auxt tFiles, key []byte, seq uint64, ro *opt.R
 		}
 	}
 
+	// The memdbs are held until the tables are searched as well.
 	em, fm := db.getMems()
+	defer releaseMems(em, fm)
 	for _, m := range [...]*memDB{em, fm} {
 		if m == nil {
 			continue
 		}
-		defer m.decref()
-
 		if ok, _, me := memGet(m.DB, ikey, db.s.icmp); ok {
 			return me == nil, nilIfNotFound(me)
 		}
