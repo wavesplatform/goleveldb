@@ -30,7 +30,7 @@ func newModulus(d uint32) modulus {
 
 func (r modulus) mod(x uint32) uint32 {
 	hi, _ := bits.Mul64(r.m*uint64(x), r.d)
-	return uint32(hi)
+	return uint32(hi) // #nosec G115 -- hi < d <= math.MaxUint32
 }
 
 type bloomFilter int

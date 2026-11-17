@@ -17,7 +17,7 @@ func Hash(data []byte, seed uint32) uint32 {
 		m = uint32(0xc6a4a793)
 		r = uint32(24)
 	)
-	h := seed ^ uint32(len(data))*m
+	h := seed ^ uint32(len(data))*m // #nosec G115 -- truncation is part of the hash, as in LevelDB
 
 	for ; len(data) >= 4; data = data[4:] {
 		h += binary.LittleEndian.Uint32(data)
