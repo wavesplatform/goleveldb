@@ -117,6 +117,24 @@ func (p *dbBench) reopen() {
 	}
 }
 
+// waitCompaction waits until no table compaction is pending or running.
+// compTriggerWait alone returns as soon as writes may resume, which can be
+// while compactions are still running.
+func (p *dbBench) waitCompaction() {
+	for {
+		// The command is received only between compactions, so once no
+		// compaction is needed, the acknowledgement means the table
+		// compaction goroutine is idle.
+		need := p.db.tableNeedCompaction()
+		if err := p.db.compTriggerWait(p.db.tcompCmdC); err != nil {
+			p.b.Fatal("table compaction failed: ", err)
+		}
+		if !need {
+			return
+		}
+	}
+}
+
 func (p *dbBench) populate(n int) {
 	p.keys, p.values = make([][]byte, n), make([][]byte, n)
 	v := newValueGen(0.5)
@@ -532,9 +550,7 @@ func BenchmarkDBCompactTables(b *testing.B) {
 	p.populate(b.N)
 	p.fill()
 	p.reopen()
-	if err := p.db.compTriggerWait(p.db.tcompCmdC); err != nil {
-		b.Fatal("table compaction failed: ", err)
-	}
+	p.waitCompaction()
 	p.gc()
 
 	b.ResetTimer()

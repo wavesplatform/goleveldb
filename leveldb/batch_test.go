@@ -255,6 +255,18 @@ func TestBatchGrow(t *testing.T) {
 	}
 }
 
+// TestBatchGrowLargeRecord checks that a large record after a small one does
+// not inflate the index estimate, which once requested millions of index
+// entries for two records.
+func TestBatchGrowLargeRecord(t *testing.T) {
+	b := new(Batch)
+	b.Delete([]byte("k"))
+	b.Put([]byte("k"), make([]byte, 16<<20))
+	if got := cap(b.index); got > 16 {
+		t.Fatalf("got index capacity %d for %d records, want at most 16", got, b.Len())
+	}
+}
+
 func TestBatchAllocs(t *testing.T) {
 	if raceEnabled {
 		t.Skip("allocation counts are not stable under the race detector")

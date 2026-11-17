@@ -91,10 +91,13 @@ func (b *Batch) grow(n int) {
 		b.data = ndata
 
 		// While the data grows geometrically, grow the index in proportion,
-		// using the average record size so far, so that it isn't reallocated
-		// separately by append.
+		// so that it isn't reallocated separately by append. Besides the
+		// incoming record, the new data has room for another o bytes, which
+		// at the average record size so far holds as many records again.
+		// The incoming record's size is left out of the average, so a large
+		// record after small ones doesn't inflate the estimate.
 		if div == 1 && o > 0 {
-			if want := len(b.index) * ncap / o; want > cap(b.index) {
+			if want := 2*len(b.index) + 1; want > cap(b.index) {
 				b.index = slices.Grow(b.index, want-len(b.index))
 			}
 		}
