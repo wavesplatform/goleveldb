@@ -7,8 +7,6 @@
 package iterator
 
 import (
-	"container/heap"
-
 	"github.com/wavesplatform/goleveldb/leveldb/comparer"
 	"github.com/wavesplatform/goleveldb/leveldb/errors"
 	"github.com/wavesplatform/goleveldb/leveldb/util"
@@ -36,8 +34,11 @@ type mergedIterator struct {
 	errf     func(err error)
 	releaser util.Releaser
 
-	indexes []int // the heap of iterator indexes
-	reverse bool  //nolint: structcheck // if true, indexes is a max-heap
+	// The heap of iterator indexes. While positioned, its root is the
+	// current iterator.
+	indexes []int
+	reverse bool   // if true, indexes is a max-heap
+	dirKey  []byte // scratch buffer for the key on a direction change
 }
 
 func assertKey(key []byte) []byte {
@@ -72,20 +73,19 @@ func (i *mergedIterator) First() bool {
 		return false
 	}
 
-	h := i.indexHeap()
-	h.Reset(false)
+	i.heapReset(false)
 	for x, iter := range i.iters {
 		switch {
 		case iter.First():
 			i.keys[x] = assertKey(iter.Key())
-			h.Push(x)
+			i.indexes = append(i.indexes, x)
 		case i.iterErr(iter):
 			return false
 		default:
 			i.keys[x] = nil
 		}
 	}
-	heap.Init(h)
+	i.heapInit()
 	i.dir = dirSOI
 	return i.next()
 }
@@ -98,20 +98,19 @@ func (i *mergedIterator) Last() bool {
 		return false
 	}
 
-	h := i.indexHeap()
-	h.Reset(true)
+	i.heapReset(true)
 	for x, iter := range i.iters {
 		switch {
 		case iter.Last():
 			i.keys[x] = assertKey(iter.Key())
-			h.Push(x)
+			i.indexes = append(i.indexes, x)
 		case i.iterErr(iter):
 			return false
 		default:
 			i.keys[x] = nil
 		}
 	}
-	heap.Init(h)
+	i.heapInit()
 	i.dir = dirEOI
 	return i.prev()
 }
@@ -124,31 +123,29 @@ func (i *mergedIterator) Seek(key []byte) bool {
 		return false
 	}
 
-	h := i.indexHeap()
-	h.Reset(false)
+	i.heapReset(false)
 	for x, iter := range i.iters {
 		switch {
 		case iter.Seek(key):
 			i.keys[x] = assertKey(iter.Key())
-			h.Push(x)
+			i.indexes = append(i.indexes, x)
 		case i.iterErr(iter):
 			return false
 		default:
 			i.keys[x] = nil
 		}
 	}
-	heap.Init(h)
+	i.heapInit()
 	i.dir = dirSOI
 	return i.next()
 }
 
 func (i *mergedIterator) next() bool {
-	h := i.indexHeap()
-	if h.Len() == 0 {
+	if len(i.indexes) == 0 {
 		i.dir = dirEOI
 		return false
 	}
-	i.index = heap.Pop(h).(int)
+	i.index = i.indexes[0]
 	i.dir = dirForward
 	return true
 }
@@ -165,34 +162,25 @@ func (i *mergedIterator) Next() bool {
 	case dirSOI:
 		return i.First()
 	case dirBackward:
-		key := append([]byte(nil), i.keys[i.index]...)
-		if !i.Seek(key) {
+		i.dirKey = append(i.dirKey[:0], i.keys[i.index]...)
+		if !i.Seek(i.dirKey) {
 			return false
 		}
 		return i.Next()
 	}
 
-	x := i.index
-	iter := i.iters[x]
-	switch {
-	case iter.Next():
-		i.keys[x] = assertKey(iter.Key())
-		heap.Push(i.indexHeap(), x)
-	case i.iterErr(iter):
+	if !i.fixRoot(i.iters[i.index].Next()) {
 		return false
-	default:
-		i.keys[x] = nil
 	}
 	return i.next()
 }
 
 func (i *mergedIterator) prev() bool {
-	h := i.indexHeap()
-	if h.Len() == 0 {
+	if len(i.indexes) == 0 {
 		i.dir = dirSOI
 		return false
 	}
-	i.index = heap.Pop(h).(int)
+	i.index = i.indexes[0]
 	i.dir = dirBackward
 	return true
 }
@@ -209,9 +197,9 @@ func (i *mergedIterator) Prev() bool {
 	case dirEOI:
 		return i.Last()
 	case dirForward:
-		key := append([]byte(nil), i.keys[i.index]...)
-		h := i.indexHeap()
-		h.Reset(true)
+		i.dirKey = append(i.dirKey[:0], i.keys[i.index]...)
+		key := i.dirKey
+		i.heapReset(true)
 		for x, iter := range i.iters {
 			if x == i.index {
 				continue
@@ -220,26 +208,32 @@ func (i *mergedIterator) Prev() bool {
 			switch {
 			case seek && iter.Prev(), !seek && iter.Last():
 				i.keys[x] = assertKey(iter.Key())
-				h.Push(x)
+				i.indexes = append(i.indexes, x)
 			case i.iterErr(iter):
 				return false
 			default:
 				i.keys[x] = nil
 			}
 		}
-		heap.Init(h)
+		i.heapInit()
+
+		// The current iterator is not in the heap, it is pushed once moved.
+		x := i.index
+		iter := i.iters[x]
+		switch {
+		case iter.Prev():
+			i.keys[x] = assertKey(iter.Key())
+			i.heapPush(x)
+		case i.iterErr(iter):
+			return false
+		default:
+			i.keys[x] = nil
+		}
+		return i.prev()
 	}
 
-	x := i.index
-	iter := i.iters[x]
-	switch {
-	case iter.Prev():
-		i.keys[x] = assertKey(iter.Key())
-		heap.Push(i.indexHeap(), x)
-	case i.iterErr(iter):
+	if !i.fixRoot(i.iters[i.index].Prev()) {
 		return false
-	default:
-		i.keys[x] = nil
 	}
 	return i.prev()
 }
@@ -292,10 +286,6 @@ func (i *mergedIterator) SetErrorCallback(f func(err error)) {
 	i.errf = f
 }
 
-func (i *mergedIterator) indexHeap() *indexHeap {
-	return (*indexHeap)(i)
-}
-
 // NewMergedIterator returns an iterator that merges its input. Walking the
 // resultant iterator will return all key/value pairs of all input iterators
 // in strictly increasing key order, as defined by cmp.
@@ -316,35 +306,78 @@ func NewMergedIterator(iters []Iterator, cmp comparer.Comparer, strict bool) Ite
 	}
 }
 
-// indexHeap implements heap.Interface.
-type indexHeap mergedIterator
+// fixRoot updates the heap after its root, the current iterator, moved; ok
+// is the result of the move. It returns false if the move failed with an
+// error that halts the iterator.
+func (i *mergedIterator) fixRoot(ok bool) bool {
+	x := i.indexes[0]
+	iter := i.iters[x]
+	switch {
+	case ok:
+		i.keys[x] = assertKey(iter.Key())
+	case i.iterErr(iter):
+		return false
+	default:
+		i.keys[x] = nil
+		n := len(i.indexes) - 1
+		i.indexes[0] = i.indexes[n]
+		i.indexes = i.indexes[:n]
+	}
+	i.heapDown(0)
+	return true
+}
 
-func (h *indexHeap) Len() int { return len(h.indexes) }
-func (h *indexHeap) Less(i, j int) bool {
-	i, j = h.indexes[i], h.indexes[j]
-	r := h.cmp.Compare(h.keys[i], h.keys[j])
-	if h.reverse {
+// The heap operations below follow container/heap, without its interface
+// dispatch.
+
+func (i *mergedIterator) heapLess(a, b int) bool {
+	r := i.cmp.Compare(i.keys[a], i.keys[b])
+	if i.reverse {
 		return r > 0
 	}
 	return r < 0
 }
 
-func (h *indexHeap) Swap(i, j int) {
-	h.indexes[i], h.indexes[j] = h.indexes[j], h.indexes[i]
+func (i *mergedIterator) heapReset(reverse bool) {
+	i.reverse = reverse
+	i.indexes = i.indexes[:0]
 }
 
-func (h *indexHeap) Push(value any) {
-	h.indexes = append(h.indexes, value.(int))
+func (i *mergedIterator) heapInit() {
+	for j := len(i.indexes)/2 - 1; j >= 0; j-- {
+		i.heapDown(j)
+	}
 }
 
-func (h *indexHeap) Pop() any {
-	e := len(h.indexes) - 1
-	popped := h.indexes[e]
-	h.indexes = h.indexes[:e]
-	return popped
+func (i *mergedIterator) heapPush(x int) {
+	i.indexes = append(i.indexes, x)
+	h := i.indexes
+	j := len(h) - 1
+	for j > 0 {
+		p := (j - 1) / 2
+		if !i.heapLess(h[j], h[p]) {
+			break
+		}
+		h[p], h[j] = h[j], h[p]
+		j = p
+	}
 }
 
-func (h *indexHeap) Reset(reverse bool) {
-	h.reverse = reverse
-	h.indexes = h.indexes[:0]
+func (i *mergedIterator) heapDown(j int) {
+	h := i.indexes
+	n := len(h)
+	for {
+		c := 2*j + 1
+		if c >= n {
+			break
+		}
+		if r := c + 1; r < n && i.heapLess(h[r], h[c]) {
+			c = r
+		}
+		if !i.heapLess(h[c], h[j]) {
+			break
+		}
+		h[j], h[c] = h[c], h[j]
+		j = c
+	}
 }

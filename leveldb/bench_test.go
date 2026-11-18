@@ -19,6 +19,7 @@ import (
 	"github.com/wavesplatform/goleveldb/leveldb/iterator"
 	"github.com/wavesplatform/goleveldb/leveldb/opt"
 	"github.com/wavesplatform/goleveldb/leveldb/storage"
+	"github.com/wavesplatform/goleveldb/leveldb/util"
 )
 
 func randomString(r *rand.Rand, n int) []byte {
@@ -113,6 +114,24 @@ func (p *dbBench) reopen() {
 	p.db, err = Open(p.stor, p.o)
 	if err != nil {
 		p.b.Fatal("Reopen: got error: ", err)
+	}
+}
+
+// waitCompaction waits until no table compaction is pending or running.
+// compTriggerWait alone returns as soon as writes may resume, which can be
+// while compactions are still running.
+func (p *dbBench) waitCompaction() {
+	for {
+		// The command is received only between compactions, so once no
+		// compaction is needed, the acknowledgement means the table
+		// compaction goroutine is idle.
+		need := p.db.tableNeedCompaction()
+		if err := p.db.compTriggerWait(p.db.tcompCmdC); err != nil {
+			p.b.Fatal("table compaction failed: ", err)
+		}
+		if !need {
+			return
+		}
 	}
 }
 
@@ -504,4 +523,173 @@ func BenchmarkDBReadConcurrent2(b *testing.B) {
 			}
 		}
 	})
+}
+
+func BenchmarkDBCompactRange(b *testing.B) {
+	p := openDBBench(b, false)
+	p.populate(b.N)
+	p.fill()
+	p.gc()
+
+	b.ResetTimer()
+	if err := p.db.CompactRange(util.Range{}); err != nil {
+		b.Fatal("compact range failed: ", err)
+	}
+	b.StopTimer()
+	b.SetBytes(116)
+	p.close()
+}
+
+// BenchmarkDBCompactTables measures compaction of tables only: the memdb is
+// flushed to level-0 by reopening the DB, and pending table compactions are
+// done, before the timer starts.
+func BenchmarkDBCompactTables(b *testing.B) {
+	p := openDBBench(b, false)
+	p.o.DisableSeeksCompaction = true
+	p.reopen()
+	p.populate(b.N)
+	p.fill()
+	p.reopen()
+	p.waitCompaction()
+	p.gc()
+
+	b.ResetTimer()
+	if err := p.db.CompactRange(util.Range{}); err != nil {
+		b.Fatal("compact range failed: ", err)
+	}
+	b.StopTimer()
+	b.SetBytes(116)
+	p.close()
+}
+
+// benchKeysLen is the size of the fixed data set used by the per-level
+// benchmarks below, which run b.N operations over it.
+const benchKeysLen = 100000
+
+// Where the fixed data set is placed by openLevelBench.
+const (
+	benchInMemdb = iota
+	benchInLevel0
+	benchInDeepLevel
+)
+
+// openLevelBench opens a DB with benchKeysLen keys placed in the memdb, in a
+// single level-0 table or in the deepest level, so that the read paths can be
+// benchmarked separately. Keys are shuffled for random access afterwards.
+func openLevelBench(b *testing.B, where int) *dbBench {
+	p := openDBBench(b, false)
+	p.o.WriteBuffer = 64 * opt.MiB
+	p.o.DisableSeeksCompaction = true
+	p.reopen()
+	p.populate(benchKeysLen)
+	p.fill()
+
+	switch where {
+	case benchInMemdb:
+	case benchInLevel0:
+		// Recovering the journal flushes the memdb into level-0.
+		p.reopen()
+		if n := p.db.s.tLen(0); n != 1 {
+			b.Fatalf("expected 1 table at level-0, got %d", n)
+		}
+	case benchInDeepLevel:
+		if err := p.db.CompactRange(util.Range{}); err != nil {
+			b.Fatal("compact range failed: ", err)
+		}
+		p.reopen()
+		v := p.db.s.version()
+		n0, nl := v.tLen(0), len(v.levels)
+		v.release()
+		if n0 != 0 || nl < 2 {
+			b.Fatalf("expected tables below level-0, got %d tables at level-0 and %d levels", n0, nl)
+		}
+	default:
+		b.Fatalf("unknown placement %d", where)
+	}
+	p.randomize()
+	runtime.GC()
+	return p
+}
+
+func (p *dbBench) getsN() {
+	b := p.b
+	db := p.db
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := range b.N {
+		if _, err := db.Get(p.keys[i%len(p.keys)], p.ro); err != nil {
+			b.Fatal("got error: ", err)
+		}
+	}
+	b.StopTimer()
+}
+
+func (p *dbBench) seeksN(nexts int) {
+	b := p.b
+
+	iter := p.newIter()
+	defer iter.Release()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := range b.N {
+		key := p.keys[i%len(p.keys)]
+		if !iter.Seek(key) {
+			b.Fatal("value not found for: ", string(key))
+		}
+		for j := 0; j < nexts && iter.Next(); j++ {
+		}
+	}
+	b.StopTimer()
+	if err := iter.Error(); err != nil {
+		b.Fatal("iterator error: ", err)
+	}
+}
+
+func BenchmarkDBGetMemdb(b *testing.B) {
+	p := openLevelBench(b, benchInMemdb)
+	p.getsN()
+	p.close()
+}
+
+func BenchmarkDBGetLevel0(b *testing.B) {
+	p := openLevelBench(b, benchInLevel0)
+	p.getsN()
+	p.close()
+}
+
+func BenchmarkDBGetDeepLevel(b *testing.B) {
+	p := openLevelBench(b, benchInDeepLevel)
+	p.getsN()
+	p.close()
+}
+
+func BenchmarkDBSeekMemdb(b *testing.B) {
+	p := openLevelBench(b, benchInMemdb)
+	p.seeksN(0)
+	p.close()
+}
+
+func BenchmarkDBSeekLevel0(b *testing.B) {
+	p := openLevelBench(b, benchInLevel0)
+	p.seeksN(0)
+	p.close()
+}
+
+func BenchmarkDBSeekDeepLevel(b *testing.B) {
+	p := openLevelBench(b, benchInDeepLevel)
+	p.seeksN(0)
+	p.close()
+}
+
+func BenchmarkDBSeekNextMemdb(b *testing.B) {
+	p := openLevelBench(b, benchInMemdb)
+	p.seeksN(10)
+	p.close()
+}
+
+func BenchmarkDBSeekNextDeepLevel(b *testing.B) {
+	p := openLevelBench(b, benchInDeepLevel)
+	p.seeksN(10)
+	p.close()
 }

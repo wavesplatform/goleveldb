@@ -17,31 +17,25 @@ func Hash(data []byte, seed uint32) uint32 {
 		m = uint32(0xc6a4a793)
 		r = uint32(24)
 	)
-	var (
-		h = seed ^ (uint32(len(data)) * m)
-		i int
-	)
+	h := seed ^ uint32(len(data))*m // #nosec G115 -- truncation is part of the hash, as in LevelDB
 
-	for n := len(data) - len(data)%4; i < n; i += 4 {
-		h += binary.LittleEndian.Uint32(data[i:])
+	for ; len(data) >= 4; data = data[4:] {
+		h += binary.LittleEndian.Uint32(data)
 		h *= m
-		h ^= (h >> 16)
+		h ^= h >> 16
 	}
 
-	switch len(data) - i {
-	default:
-		panic("not reached")
+	switch len(data) {
 	case 3:
-		h += uint32(data[i+2]) << 16
+		h += uint32(data[2]) << 16
 		fallthrough
 	case 2:
-		h += uint32(data[i+1]) << 8
+		h += uint32(data[1]) << 8
 		fallthrough
 	case 1:
-		h += uint32(data[i])
+		h += uint32(data[0])
 		h *= m
-		h ^= (h >> r)
-	case 0:
+		h ^= h >> r
 	}
 
 	return h

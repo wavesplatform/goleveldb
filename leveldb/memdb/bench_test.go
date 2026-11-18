@@ -78,8 +78,30 @@ func BenchmarkGetRandom(b *testing.B) {
 		}
 	}
 
+	b.ResetTimer()
+	for range b.N {
+		if _, err := p.Get(buf[rand.Int()%len(buf)][:]); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkPutCapacity fills a memdb created with a fixed capacity, like the
+// DB write buffer, starting over with a new memdb when it is full.
+func BenchmarkPutCapacity(b *testing.B) {
+	const capacity = 4 << 20
+	key := make([]byte, 16)
+	value := make([]byte, 100)
+	b.ReportAllocs()
+	p := New(comparer.DefaultComparer, capacity)
+	i := 0
 	for b.Loop() {
-		if _, err := p.Get(buf[rand.Int()%b.N][:]); err != nil {
+		if p.Free() < len(key)+len(value) {
+			p = New(comparer.DefaultComparer, capacity)
+		}
+		binary.BigEndian.PutUint64(key, uint64(i))
+		i++
+		if err := p.Put(key, value); err != nil {
 			b.Fatal(err)
 		}
 	}

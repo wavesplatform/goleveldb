@@ -7,9 +7,11 @@
 package leveldb
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"sort"
+	"sync"
 	"sync/atomic"
 
 	"github.com/wavesplatform/goleveldb/leveldb/cache"
@@ -357,12 +359,24 @@ func (t *tOps) create(tSize int) (*tWriter, error) {
 	if err != nil {
 		return nil, err
 	}
+	bw := tWriterBufPool.Get().(*bufio.Writer)
+	bw.Reset(fw)
 	return &tWriter{
 		t:  t,
 		fd: fd,
 		w:  fw,
-		tw: table.NewWriter(fw, t.s.o.Options, t.blockBuffer, tSize),
+		bw: bw,
+		tw: table.NewWriter(bw, t.s.o.Options, t.blockBuffer, tSize),
 	}, nil
+}
+
+// tWriterBufSize is the size of the output buffer of a table writer. Blocks
+// are written to the file in chunks of this size instead of one write per
+// block.
+const tWriterBufSize = 64 * opt.KiB
+
+var tWriterBufPool = sync.Pool{
+	New: func() any { return bufio.NewWriterSize(nil, tWriterBufSize) },
 }
 
 // Builds table from src iterator.
@@ -531,6 +545,7 @@ type tWriter struct {
 
 	fd storage.FileDesc
 	w  storage.Writer
+	bw *bufio.Writer // buffers w, flushed before sync
 	tw *table.Writer
 
 	first, last []byte
@@ -550,8 +565,14 @@ func (w *tWriter) empty() bool {
 	return w.first == nil
 }
 
-// Closes the storage.Writer.
+// Closes the storage.Writer. Data still buffered in bw is discarded, it is
+// flushed by finish.
 func (w *tWriter) close() error {
+	if w.bw != nil {
+		w.bw.Reset(nil)
+		tWriterBufPool.Put(w.bw)
+		w.bw = nil
+	}
 	if w.w != nil {
 		if err := w.w.Close(); err != nil {
 			return err
@@ -573,6 +594,10 @@ func (w *tWriter) finish() (f *tFile, err error) {
 		}
 	}()
 	err = w.tw.Close()
+	if err != nil {
+		return
+	}
+	err = w.bw.Flush()
 	if err != nil {
 		return
 	}

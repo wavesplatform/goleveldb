@@ -102,6 +102,36 @@ db, err := leveldb.OpenFile("path/to/db", o)
 defer db.Close()
 ...
 ```
+Benchmarking and profiling
+-----------
+
+The Makefile has targets for benchmarking and profiling; it requires bash
+(`/bin/bash`). Each target accepts `PKG` (default `./leveldb/...`), `BENCH`
+(benchmark regexp, default `.`) and `COUNT` (default `1`). Other settings are
+`BENCH_TIMEOUT` (default `2h`), `BENCH_FLAGS` (extra `go test` flags, e.g.
+`BENCH_FLAGS=-benchtime=2s`) and `BENCH_OUT` (the results file written by
+`bench` and read by `bench-compare`, default `build/bench/current.txt`).
+Output goes to `build/`.
+
+* `make bench` runs the benchmarks with `-benchmem` and writes the results to
+  `build/bench/current.txt`, e.g. `make bench PKG=./leveldb BENCH=DBGet COUNT=10`.
+* `make bench-baseline` runs the benchmarks with `COUNT=10` and records them in
+  `build/bench/baseline.txt`.
+* `make bench-compare` compares `build/bench/current.txt` with the baseline
+  using [benchstat](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat).
+* `make bench-profile` runs the benchmarks of a single package and collects
+  CPU, memory, block and mutex profiles in `build/profile/<pkg>/`, then prints
+  the top `PPROF_TOP` (default `25`) entries of each, e.g.
+  `make bench-profile PKG=./leveldb/memdb BENCH=Put`. `PKG` must name a single
+  package here and for `flamegraph`, the default `./leveldb/...` is rejected.
+* `make flamegraph` opens a collected profile in the pprof web UI (flame graph
+  view), e.g. `make flamegraph PKG=./leveldb/memdb PROFILE=mem`. `PROFILE` is
+  one of `cpu` (default), `mem`, `block` or `mutex`, and `PPROF_PORT` sets the
+  port (default `8080`).
+
+A typical workflow: `make bench-baseline`, change the code, `make bench COUNT=10`,
+then `make bench-compare`.
+
 Documentation
 -----------
 

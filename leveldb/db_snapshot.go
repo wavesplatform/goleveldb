@@ -7,7 +7,6 @@
 package leveldb
 
 import (
-	"container/list"
 	"fmt"
 	"runtime"
 	"sync"
@@ -19,9 +18,51 @@ import (
 )
 
 type snapshotElement struct {
-	seq uint64
-	ref int
-	e   *list.Element
+	seq        uint64
+	ref        int
+	prev, next *snapshotElement
+}
+
+// snapshotList is an intrusive doubly linked list of snapshot elements,
+// ordered by sequence number. The zero value is an empty list. It keeps one
+// released element for reuse, so that the short-lived snapshots taken by
+// DB.Get and DB.Has don't allocate.
+type snapshotList struct {
+	front, back *snapshotElement
+	free        *snapshotElement
+}
+
+func (l *snapshotList) pushBack(seq uint64) *snapshotElement {
+	se := l.free
+	if se != nil {
+		l.free = nil
+		*se = snapshotElement{}
+	} else {
+		se = &snapshotElement{}
+	}
+	se.seq, se.ref, se.prev = seq, 1, l.back
+	if l.back != nil {
+		l.back.next = se
+	} else {
+		l.front = se
+	}
+	l.back = se
+	return se
+}
+
+func (l *snapshotList) remove(se *snapshotElement) {
+	if se.prev != nil {
+		se.prev.next = se.next
+	} else {
+		l.front = se.next
+	}
+	if se.next != nil {
+		se.next.prev = se.prev
+	} else {
+		l.back = se.prev
+	}
+	se.prev, se.next = nil, nil
+	l.free = se
 }
 
 // Acquires a snapshot, based on latest sequence.
@@ -31,8 +72,7 @@ func (db *DB) acquireSnapshot() *snapshotElement {
 
 	seq := db.getSeq()
 
-	if e := db.snapsList.Back(); e != nil {
-		se := e.Value.(*snapshotElement)
+	if se := db.snapsList.back; se != nil {
 		if se.seq == seq {
 			se.ref++
 			return se
@@ -40,20 +80,18 @@ func (db *DB) acquireSnapshot() *snapshotElement {
 			panic("leveldb: sequence number is not increasing")
 		}
 	}
-	se := &snapshotElement{seq: seq, ref: 1}
-	se.e = db.snapsList.PushBack(se)
-	return se
+	return db.snapsList.pushBack(seq)
 }
 
-// Releases given snapshot element.
+// Releases given snapshot element. The element must not be used afterwards
+// if this was its last reference, since it may be reused.
 func (db *DB) releaseSnapshot(se *snapshotElement) {
 	db.snapsMu.Lock()
 	defer db.snapsMu.Unlock()
 
 	se.ref--
 	if se.ref == 0 {
-		db.snapsList.Remove(se.e)
-		se.e = nil
+		db.snapsList.remove(se)
 	} else if se.ref < 0 {
 		panic("leveldb: Snapshot: negative element reference")
 	}
@@ -64,8 +102,8 @@ func (db *DB) minSeq() uint64 {
 	db.snapsMu.Lock()
 	defer db.snapsMu.Unlock()
 
-	if e := db.snapsList.Front(); e != nil {
-		return e.Value.(*snapshotElement).seq
+	if se := db.snapsList.front; se != nil {
+		return se.seq
 	}
 
 	return db.getSeq()

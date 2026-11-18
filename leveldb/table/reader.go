@@ -414,9 +414,11 @@ func (i *blockIter) Release() {
 	if i.dir != dirReleased {
 		i.tr = nil
 		i.block = nil
-		i.prevNode = nil
-		i.prevKeys = nil
-		i.key = nil
+		// The buffers are kept, emptied, for an indexIter that recycles
+		// the released iterator.
+		i.prevNode = i.prevNode[:0]
+		i.prevKeys = i.prevKeys[:0]
+		i.key = i.key[:0]
 		i.value = nil
 		i.dir = dirReleased
 		if i.blockReleaser != nil {
@@ -481,6 +483,9 @@ type indexIter struct {
 	*blockIter
 	tr    *Reader
 	slice *util.Range
+	// The last data iterator returned by Get. Once released, which the
+	// indexed iterator does before getting the next one, it is recycled.
+	data *blockIter
 	// Options
 	fillCache bool
 }
@@ -499,7 +504,20 @@ func (i *indexIter) Get() iterator.Iterator {
 	if i.slice != nil && (i.isFirst() || i.isLast()) {
 		slice = i.slice
 	}
-	return i.tr.getDataIterErr(dataBH, slice, i.tr.verifyChecksum, i.fillCache)
+	var spare *blockIter
+	if i.data != nil && i.data.dir == dirReleased {
+		spare = i.data
+	}
+	it := i.tr.getDataIterErr(spare, dataBH, slice, i.tr.verifyChecksum, i.fillCache)
+	if bi, ok := it.(*blockIter); ok {
+		i.data = bi
+	}
+	return it
+}
+
+func (i *indexIter) Release() {
+	i.data = nil
+	i.blockIter.Release()
 }
 
 // Reader is a table reader.
@@ -674,22 +692,35 @@ func minLZDecodeTo(dst []byte, src []byte) ([]byte, error) {
 }
 
 func (r *Reader) readBlock(bh blockHandle, verifyChecksum bool) (*block, error) {
-	data, err := r.readRawBlock(bh, verifyChecksum)
-	if err != nil {
+	b := new(block)
+	if err := r.readBlockInto(b, bh, verifyChecksum); err != nil {
 		return nil, err
 	}
+	return b, nil
+}
+
+// readBlockInto reads the block into b, so that one-shot lookups can keep
+// the block on the stack.
+func (r *Reader) readBlockInto(b *block, bh blockHandle, verifyChecksum bool) error {
+	data, err := r.readRawBlock(bh, verifyChecksum)
+	if err != nil {
+		return err
+	}
 	restartsLen := int(binary.LittleEndian.Uint32(data[len(data)-4:]))
-	b := &block{
+	*b = block{
 		bpool:          r.bpool,
 		bh:             bh,
 		data:           data,
 		restartsLen:    restartsLen,
 		restartsOffset: len(data) - (restartsLen+1)*4,
 	}
-	return b, nil
+	return nil
 }
 
-func (r *Reader) readBlockCached(bh blockHandle, verifyChecksum, fillCache bool) (*block, util.Releaser, error) {
+// readBlockCached returns the block from the block cache, filling it if
+// fillCache is set. A block not served from the cache is read into local if
+// not nil, which the caller owns, or into a new block otherwise.
+func (r *Reader) readBlockCached(local *block, bh blockHandle, verifyChecksum, fillCache bool) (*block, util.Releaser, error) {
 	if r.cache != nil {
 		var (
 			err error
@@ -718,9 +749,14 @@ func (r *Reader) readBlockCached(bh blockHandle, verifyChecksum, fillCache bool)
 			return nil, nil, err
 		}
 	}
-
-	b, err := r.readBlock(bh, verifyChecksum)
-	return b, b, err
+	if local == nil {
+		b, err := r.readBlock(bh, verifyChecksum)
+		return b, b, err
+	}
+	if err := r.readBlockInto(local, bh, verifyChecksum); err != nil {
+		return nil, nil, err
+	}
+	return local, local, nil
 }
 
 func (r *Reader) readFilterBlock(bh blockHandle) (*filterBlock, error) {
@@ -783,7 +819,7 @@ func (r *Reader) readFilterBlockCached(bh blockHandle, fillCache bool) (*filterB
 
 func (r *Reader) getIndexBlock(fillCache bool) (b *block, rel util.Releaser, err error) {
 	if r.indexBlock == nil {
-		return r.readBlockCached(r.indexBH, true, fillCache)
+		return r.readBlockCached(nil, r.indexBH, true, fillCache)
 	}
 	return r.indexBlock, util.NoopReleaser{}, nil
 }
@@ -796,12 +832,27 @@ func (r *Reader) getFilterBlock(fillCache bool) (*filterBlock, util.Releaser, er
 }
 
 func (r *Reader) newBlockIter(b *block, bReleaser util.Releaser, slice *util.Range, inclLimit bool) *blockIter {
-	bi := &blockIter{
-		tr:            r,
-		block:         b,
-		blockReleaser: bReleaser,
+	return r.resetBlockIter(nil, b, bReleaser, slice, inclLimit)
+}
+
+// resetBlockIter is newBlockIter that reuses bi, a released block iterator,
+// and its buffers. A nil bi is allocated.
+func (r *Reader) resetBlockIter(bi *blockIter, b *block, bReleaser util.Releaser, slice *util.Range, inclLimit bool) *blockIter {
+	if bi == nil {
+		bi = &blockIter{}
+	}
+	key := bi.key[:0]
+	if key == nil {
 		// Valid key should never be nil.
-		key:             make([]byte, 0),
+		key = []byte{}
+	}
+	*bi = blockIter{
+		tr:              r,
+		block:           b,
+		blockReleaser:   bReleaser,
+		key:             key,
+		prevNode:        bi.prevNode[:0],
+		prevKeys:        bi.prevKeys[:0],
 		dir:             dirSOI,
 		riStart:         0,
 		riLimit:         b.restartsLen,
@@ -835,15 +886,9 @@ func (r *Reader) newBlockIter(b *block, bReleaser util.Releaser, slice *util.Ran
 	return bi
 }
 
-func (r *Reader) getDataIter(dataBH blockHandle, slice *util.Range, verifyChecksum, fillCache bool) iterator.Iterator {
-	b, rel, err := r.readBlockCached(dataBH, verifyChecksum, fillCache)
-	if err != nil {
-		return iterator.NewEmptyIterator(err)
-	}
-	return r.newBlockIter(b, rel, slice, false)
-}
-
-func (r *Reader) getDataIterErr(dataBH blockHandle, slice *util.Range, verifyChecksum, fillCache bool) iterator.Iterator {
+// getDataIterErr returns an iterator over the data block, reusing spare,
+// a released block iterator, if not nil.
+func (r *Reader) getDataIterErr(spare *blockIter, dataBH blockHandle, slice *util.Range, verifyChecksum, fillCache bool) iterator.Iterator {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -851,7 +896,11 @@ func (r *Reader) getDataIterErr(dataBH blockHandle, slice *util.Range, verifyChe
 		return iterator.NewEmptyIterator(r.err)
 	}
 
-	return r.getDataIter(dataBH, slice, verifyChecksum, fillCache)
+	b, rel, err := r.readBlockCached(nil, dataBH, verifyChecksum, fillCache)
+	if err != nil {
+		return iterator.NewEmptyIterator(err)
+	}
+	return r.resetBlockIter(spare, b, rel, slice, false)
 }
 
 // NewIterator creates an iterator from the table.
@@ -891,6 +940,32 @@ func (r *Reader) NewIterator(slice *util.Range, ro *opt.ReadOptions) iterator.It
 	return iterator.NewIndexedIterator(index, opt.GetStrict(r.o, ro, opt.StrictReader))
 }
 
+// findState holds the per-lookup state of find and OffsetOf. It is pooled,
+// so that point lookups do not allocate iterators, key buffers or, for
+// blocks not served from the cache, the block itself.
+type findState struct {
+	index, data blockIter
+	local       block
+}
+
+// findStateMaxKeyBuf caps the key buffers retained by a pooled findState.
+const findStateMaxKeyBuf = 4 << 10
+
+var findStatePool = sync.Pool{New: func() any { return new(findState) }}
+
+func getFindState() *findState {
+	return findStatePool.Get().(*findState)
+}
+
+func putFindState(st *findState) {
+	// Drop the references to the reader and the blocks, keeping the grown
+	// key buffers.
+	st.index = blockIter{key: reusable(st.index.key, findStateMaxKeyBuf)}
+	st.data = blockIter{key: reusable(st.data.key, findStateMaxKeyBuf)}
+	st.local = block{}
+	findStatePool.Put(st)
+}
+
 func (r *Reader) find(key []byte, filtered bool, ro *opt.ReadOptions, noValue bool) (rkey, value []byte, err error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -900,15 +975,27 @@ func (r *Reader) find(key []byte, filtered bool, ro *opt.ReadOptions, noValue bo
 		return
 	}
 
+	return r.findLocked(key, filtered, ro, noValue, false)
+}
+
+// findLocked looks up the first key greater than or equal to key, using a
+// pooled findState for the iterators, key buffers and uncached block.
+// With exact set it only returns the value, and only if the found key equals
+// key; otherwise it returns a private copy of the found key.
+// The read lock must be held.
+func (r *Reader) findLocked(key []byte, filtered bool, ro *opt.ReadOptions, noValue, exact bool) (rkey, value []byte, err error) {
 	indexBlock, rel, err := r.getIndexBlock(true)
 	if err != nil {
 		return
 	}
 	defer rel.Release()
 
-	index := r.newBlockIter(indexBlock, nil, nil, true)
-	defer index.Release()
+	st := getFindState()
+	defer putFindState(st)
 
+	// The index iterator has no releasers, so it needs no Release.
+	index := &st.index
+	r.resetBlockIter(index, indexBlock, nil, nil, true)
 	if !index.Seek(key) {
 		if err = index.Error(); err == nil {
 			err = ErrNotFound
@@ -936,9 +1023,17 @@ func (r *Reader) find(key []byte, filtered bool, ro *opt.ReadOptions, noValue bo
 		}
 	}
 
-	data := r.getDataIter(dataBH, nil, r.verifyChecksum, !ro.GetDontFillCache())
+	fillCache := !ro.GetDontFillCache()
+	b, brel, err := r.readBlockCached(&st.local, dataBH, r.verifyChecksum, fillCache)
+	if err != nil {
+		return
+	}
+	// The data iterator has no releasers either, the block is released
+	// with brel.
+	data := &st.data
+	r.resetBlockIter(data, b, nil, nil, false)
 	if !data.Seek(key) {
-		data.Release()
+		brel.Release()
 		if err = data.Error(); err != nil {
 			return
 		}
@@ -957,28 +1052,49 @@ func (r *Reader) find(key []byte, filtered bool, ro *opt.ReadOptions, noValue bo
 			return nil, nil, r.err
 		}
 
-		data = r.getDataIter(dataBH, nil, r.verifyChecksum, !ro.GetDontFillCache())
+		b, brel, err = r.readBlockCached(&st.local, dataBH, r.verifyChecksum, fillCache)
+		if err != nil {
+			return
+		}
+		r.resetBlockIter(data, b, nil, nil, false)
 		if !data.Next() {
-			data.Release()
+			brel.Release()
 			if err = data.Error(); err == nil {
 				err = ErrNotFound
 			}
 			return
 		}
 	}
+	defer brel.Release()
 
-	// Key doesn't use block buffer, no need to copy the buffer.
-	rkey = data.Key()
+	if exact && r.cmp.Compare(data.key, key) != 0 {
+		return nil, nil, ErrNotFound
+	}
+	// The block was read into a fresh buffer that is neither pooled nor
+	// cached, so the value is already private. Otherwise the buffer will be
+	// recycled or is shared through the cache, so the value is copied.
+	privateValue := r.bpool == nil && b == &st.local
+	switch {
+	case !exact && !noValue && !privateValue && len(data.key) > 0 && len(data.value) > 0:
+		// Copy the key, whose buffer is reused by later lookups, and the
+		// value with one allocation. The key capacity is capped, so that
+		// appending to it can't overwrite the value. Empty slices are left
+		// to the cases below, which return them as nil.
+		kl := len(data.key)
+		buf := make([]byte, kl+len(data.value))
+		copy(buf, data.key)
+		copy(buf[kl:], data.value)
+		return buf[:kl:kl], buf[kl:], nil
+	case !exact:
+		rkey = append([]byte(nil), data.key...)
+	}
 	if !noValue {
-		if r.bpool == nil {
-			value = data.Value()
+		if privateValue {
+			value = data.value
 		} else {
-			// Value does use block buffer, and since the buffer will be
-			// recycled, it need to be copied.
-			value = append([]byte(nil), data.Value()...)
+			value = append([]byte(nil), data.value...)
 		}
 	}
-	data.Release()
 	return
 }
 
@@ -1025,11 +1141,7 @@ func (r *Reader) Get(key []byte, ro *opt.ReadOptions) (value []byte, err error) 
 		return
 	}
 
-	rkey, value, err := r.find(key, false, ro, false)
-	if err == nil && r.cmp.Compare(rkey, key) != 0 {
-		value = nil
-		err = ErrNotFound
-	}
+	_, value, err = r.findLocked(key, false, ro, false, true)
 	return
 }
 
@@ -1045,14 +1157,18 @@ func (r *Reader) OffsetOf(key []byte) (offset int64, err error) {
 		return
 	}
 
-	indexBlock, rel, err := r.readBlockCached(r.indexBH, true, true)
+	indexBlock, rel, err := r.getIndexBlock(true)
 	if err != nil {
 		return
 	}
 	defer rel.Release()
 
-	index := r.newBlockIter(indexBlock, nil, nil, true)
-	defer index.Release()
+	st := getFindState()
+	defer putFindState(st)
+
+	// The index iterator has no releasers, so it needs no Release.
+	index := &st.index
+	r.resetBlockIter(index, indexBlock, nil, nil, true)
 	if index.Seek(key) {
 		dataBH, n := decodeBlockHandle(index.Value())
 		if n == 0 {
